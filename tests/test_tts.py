@@ -16,7 +16,6 @@ from low_latency_tts_service_mcp.tts import (
     AudioPlayer,
     KokoroRuntimeConfig,
     PlaybackJob,
-    SamplingParams,
     build_kokoro_command,
     clean_text,
     generate_wav,
@@ -39,7 +38,6 @@ def _runtime_config(tmp_path: Path) -> KokoroRuntimeConfig:
         model_path=model_path,
         n_threads=4,
         timeout_seconds=30,
-        sampling=SamplingParams(temperature=1.0, topk=50, repetition_penalty=1.0, top_p=1.0),
     )
 
 
@@ -66,7 +64,7 @@ def test_validate_voice_rejects_unknown_voice() -> None:
         validate_voice("not_a_voice", kokoro_voices())
 
 
-def test_build_kokoro_command_uses_voice_and_sampling(tmp_path: Path) -> None:
+def test_build_kokoro_command_uses_voice(tmp_path: Path) -> None:
     config = _runtime_config(tmp_path)
     output_path = tmp_path / "out.wav"
 
@@ -82,14 +80,6 @@ def test_build_kokoro_command_uses_voice_and_sampling(tmp_path: Path) -> None:
         str(output_path),
         "--n-threads",
         "4",
-        "--temperature",
-        "1.0",
-        "--topk",
-        "50",
-        "--repetition-penalty",
-        "1.0",
-        "--top-p",
-        "1.0",
         "--voice",
         "af_heart",
     )
@@ -105,7 +95,6 @@ def test_validate_runtime_config_requires_files(tmp_path: Path) -> None:
         model_path=tmp_path / "missing.gguf",
         n_threads=config.n_threads,
         timeout_seconds=config.timeout_seconds,
-        sampling=config.sampling,
     )
     with pytest.raises(FileNotFoundError, match="Kokoro GGUF"):
         validate_runtime_config(missing)

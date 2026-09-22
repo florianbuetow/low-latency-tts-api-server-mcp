@@ -77,29 +77,6 @@ class AudioOutputStream(Protocol):
 
 
 @dataclasses.dataclass(frozen=True)
-class SamplingParams:
-    """Sampling parameters passed to TTS.cpp for Kokoro generation."""
-
-    temperature: float
-    topk: int
-    repetition_penalty: float
-    top_p: float
-
-    def as_cli_args(self) -> tuple[str, ...]:
-        """Render sampling parameters as TTS.cpp CLI arguments."""
-        return (
-            "--temperature",
-            str(self.temperature),
-            "--topk",
-            str(self.topk),
-            "--repetition-penalty",
-            str(self.repetition_penalty),
-            "--top-p",
-            str(self.top_p),
-        )
-
-
-@dataclasses.dataclass(frozen=True)
 class KokoroRuntimeConfig:
     """All settings needed to execute one Kokoro TTS.cpp generation."""
 
@@ -107,7 +84,6 @@ class KokoroRuntimeConfig:
     model_path: Path
     n_threads: int
     timeout_seconds: int
-    sampling: SamplingParams
 
 
 @dataclasses.dataclass(frozen=True)
@@ -209,7 +185,6 @@ def build_kokoro_command(config: KokoroRuntimeConfig, text: str, voice: str, out
         str(output_path),
         "--n-threads",
         str(config.n_threads),
-        *config.sampling.as_cli_args(),
         "--voice",
         voice,
     )

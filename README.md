@@ -15,7 +15,7 @@ Low-latency local text-to-speech powered by Kokoro through [TTS.cpp](https://git
 | TTS.cpp Runtime | Uses the local TTS.cpp `tts-cli` for low-latency Kokoro GGUF speech generation |
 | Kokoro Voices | 27 English no-espeak Kokoro voices, including `af_heart`, `af_sky`, `am_adam`, and `bm_george` |
 | WAV Output | Generated audio is saved as timestamped WAV files under `data/output/` when enabled |
-| Explicit Runtime Config | TTS.cpp binary, GGUF model path, sampling parameters, host, port, and playback settings are read from `config.yaml` |
+| Explicit Runtime Config | TTS.cpp binary, GGUF model path, thread count, host, port, and playback settings are read from `config.yaml` |
 
 Under the hood, the project shells out to a local [TTS.cpp](https://github.com/mmwillet/TTS.cpp) `tts-cli` binary for Kokoro generation, uses [sounddevice](https://python-sounddevice.readthedocs.io/) for audio output, and uses [FastAPI](https://fastapi.tiangolo.com/) for the HTTP server. The MCP server is a lightweight TypeScript stdio-to-HTTP relay using the [Model Context Protocol SDK](https://modelcontextprotocol.io/).
 
@@ -77,7 +77,7 @@ There are three entry paths into the system. HTTP clients call the FastAPI serve
 - **uv** - Python package manager ([install](https://docs.astral.sh/uv/getting-started/installation/))
 - **just** - Command runner ([install](https://github.com/casey/just#installation))
 - **Node.js 18+** - For the MCP server
-- **TTS.cpp `tts-cli`** - A local executable referenced by `config.yaml`
+- **git and cmake** - Used by `just build-tts` to fetch, patch and compile TTS.cpp
 - **Local audio output device** - Required for playback through `sounddevice`
 
 ## Project Structure
@@ -122,7 +122,24 @@ There are three entry paths into the system. HTTP clients call the FastAPI serve
 just init
 ```
 
-Creates report directories and installs Python dependencies via `uv sync --all-extras`. If no Kokoro model is present and the command is running interactively, `just init` prompts for a model download. In non-interactive contexts it tells you to run `just download`.
+Builds the TTS.cpp binaries, creates report directories, and installs Python dependencies via `uv sync --all-extras`. If no Kokoro model is present and the command is running interactively, `just init` prompts for a model download. In non-interactive contexts it tells you to run `just download`.
+
+### Build the TTS.cpp Binaries
+
+```bash
+just build-tts
+```
+
+Run automatically by `just init`, and a no-op once the binaries exist — delete `vendor/` to force a rebuild. `vendor/` is gitignored, so the binaries are a local build artifact; what this repository tracks is everything needed to reproduce them:
+
+| Item | Purpose |
+|------|---------|
+| `TTS_CPP_COMMIT` in `scripts/build-tts.sh` | The pinned upstream TTS.cpp commit |
+| `patches/tts-cpp.patch` | Local changes applied on top of that commit |
+
+The patch keeps `.`, `!` and `?` in the phonemized prompt so Kokoro produces sentence-boundary pauses instead of running sentences together, builds the `phonemize` helper for inspecting phonemes, trims unused example targets, and adds load and generation timing output. The ggml Accelerate, BLAS and Metal backends are pinned off so every machine builds the same CPU binary and generates identical audio.
+
+To move to a newer upstream TTS.cpp, bump `TTS_CPP_COMMIT`, delete `vendor/`, and re-run. If the patch no longer applies, re-create it with `git -C vendor/TTS.cpp diff > patches/tts-cpp.patch`.
 
 ### Download a Model
 
@@ -144,7 +161,7 @@ data/models/Kokoro_no_espeak.gguf
 
 ### Getting Started
 
-1. Run `just init` - installs Python dependencies
+1. Run `just init` - builds the TTS.cpp binaries and installs Python dependencies
 2. Run `just download` - downloads `Kokoro_no_espeak.gguf` if it is not already present
 3. Confirm `config.yaml` points at the local `tts-cli` executable and downloaded model
 4. Run `just start` - starts the FastAPI TTS server
@@ -167,10 +184,6 @@ save_wav: true
 simplify_punctuation: false
 n_threads: 8
 timeout_seconds: 120
-temperature: 1.0
-topk: 50
-repetition_penalty: 1.0
-top_p: 1.0
 host: 0.0.0.0
 port: 12000
 ```
@@ -187,10 +200,6 @@ port: 12000
 | `simplify_punctuation` | Simplify punctuation before synthesis (`true` or `false`) |
 | `n_threads` | Number of threads passed to TTS.cpp |
 | `timeout_seconds` | Maximum duration for one TTS.cpp generation command |
-| `temperature` | Kokoro sampling temperature |
-| `topk` | Kokoro top-k sampling value |
-| `repetition_penalty` | Kokoro repetition penalty |
-| `top_p` | Kokoro top-p sampling value |
 | `host` | Server listen address |
 | `port` | Server listen port |
 
@@ -226,7 +235,7 @@ just chat
 
 Starts an interactive terminal REPL that synthesizes and plays each submission with the local TTS.cpp `tts-cli`. Generation for the next line overlaps playback of the current one, so there is no gap between utterances. The REPL drives the shared TTS runtime directly and does not require the FastAPI server to be running.
 
-If `--voice` is not supplied, the REPL prompts you to pick a voice; otherwise it uses the one you pass. It reads settings (model, sampling parameters, sample rate, `save_wav`, and more) from `config.yaml` and fails immediately if the configured `tts-cli` or GGUF model is missing.
+If `--voice` is not supplied, the REPL prompts you to pick a voice; otherwise it uses the one you pass. It reads settings (model, sample rate, `save_wav`, and more) from `config.yaml` and fails immediately if the configured `tts-cli` or GGUF model is missing.
 
 Input controls:
 

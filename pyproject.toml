@@ -235,8 +235,17 @@ ignore-words = "config/codespell/ignore.txt"
 # Reduced from 30 days to allow security patches through.
 exclude-newer = "7 days"
 
-# Security floor: the latest semgrep transitively pins pyjwt to a vulnerable
-# 2.12.x via its [crypto] extra. Force the patched release so code-audit
-# (pip-audit) stays green; uv selects the newest semgrep compatible with this
-# floor and advances automatically once semgrep relaxes its pin upstream.
-constraint-dependencies = ["pyjwt>=2.13.0"]
+# Security floors for transitive dependencies that resolve to versions with
+# known advisories, keeping code-audit (pip-audit) green. Each floor is the
+# lowest patched release named by the advisory; uv selects the newest direct
+# dependency compatible with the floor and advances automatically once the
+# upstream pins relax.
+constraint-dependencies = [
+    "pyjwt>=2.13.0",      # semgrep[crypto] pins a vulnerable 2.12.x
+    "anyio>=4.14.2",      # GHSA-82r6-8w77-94w6, GHSA-5p39-cfhj-2xmp
+    "click>=8.3.3",       # PYSEC-2026-2132
+    "cryptography>=50.0.0",  # PYSEC-2026-3552
+    "gitpython>=3.1.60",  # PYSEC-2026-3984, PYSEC-2026-3982 and others
+    "mcp>=1.28.1",        # PYSEC-2026-3481, PYSEC-2026-3482, PYSEC-2026-3483
+    "pip>=26.2",          # PYSEC-2026-3721
+]

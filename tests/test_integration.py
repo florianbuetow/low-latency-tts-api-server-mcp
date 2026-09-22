@@ -184,7 +184,7 @@ while [ "$#" -gt 0 ]; do
             model_path="$2"
             shift 2
             ;;
-        --n-threads|--temperature|--topk|--repetition-penalty|--top-p)
+        --n-threads)
             shift 2
             ;;
         *)
@@ -237,10 +237,6 @@ def _write_config(tmp_path: Path, tts_cli: Path, host: str, port: int) -> Path:
         "simplify_punctuation: true",
         "n_threads: 2",
         "timeout_seconds: 10",
-        "temperature: 1.0",
-        "topk: 50",
-        "repetition_penalty: 1.0",
-        "top_p: 1.0",
         f"host: {host}",
         f"port: {port}",
     ]

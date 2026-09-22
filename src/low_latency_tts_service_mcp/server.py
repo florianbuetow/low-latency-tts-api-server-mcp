@@ -21,7 +21,6 @@ from low_latency_tts_service_mcp.tts import (
     AudioPlayer,
     KokoroRuntimeConfig,
     PlaybackJob,
-    SamplingParams,
     clean_text,
     generate_wav,
     kokoro_voices,
@@ -390,29 +389,14 @@ def _require_int(config: dict[str, object], key: str) -> int:
     return value
 
 
-def _require_float(config: dict[str, object], key: str) -> float:
-    """Fetch a required numeric config key as float."""
-    value = _require(config, key)
-    if isinstance(value, bool) or not isinstance(value, (float, int)):
-        raise ValueError(f"'{key}' in config.yaml must be a number")
-    return float(value)
-
-
 def _parse_server_config() -> _ServerConfig:
     """Load and validate server settings from config.yaml."""
     config = load_config()
-    sampling = SamplingParams(
-        temperature=_require_float(config, "temperature"),
-        topk=_require_int(config, "topk"),
-        repetition_penalty=_require_float(config, "repetition_penalty"),
-        top_p=_require_float(config, "top_p"),
-    )
     runtime = KokoroRuntimeConfig(
         tts_cli=Path(_require_str(config, "tts_cli")),
         model_path=Path(_require_str(config, "model")),
         n_threads=_require_int(config, "n_threads"),
         timeout_seconds=_require_int(config, "timeout_seconds"),
-        sampling=sampling,
     )
     return _ServerConfig(
         runtime=runtime,

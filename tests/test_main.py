@@ -27,10 +27,6 @@ def _base_config() -> dict[str, object]:
         "simplify_punctuation": False,
         "n_threads": 8,
         "timeout_seconds": 120,
-        "temperature": 1.0,
-        "topk": 50,
-        "repetition_penalty": 1.0,
-        "top_p": 1.0,
     }
 
 
@@ -50,7 +46,7 @@ class TestLoadChatConfig:
         assert config.output_dir == Path("./data/output")
         assert config.runtime.model_path == Path("./data/models/Kokoro_no_espeak.gguf")
         assert config.runtime.n_threads == 8
-        assert config.runtime.sampling.topk == 50
+        assert config.runtime.timeout_seconds == 120
 
     def test_raises_when_model_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
         config = _base_config()

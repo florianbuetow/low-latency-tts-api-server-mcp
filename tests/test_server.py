@@ -20,7 +20,7 @@ from low_latency_tts_service_mcp.server import (
     router,
     server_audio_worker,
 )
-from low_latency_tts_service_mcp.tts import KokoroRuntimeConfig, SamplingParams
+from low_latency_tts_service_mcp.tts import KokoroRuntimeConfig
 
 
 def _runtime_config(tmp_path: Path) -> KokoroRuntimeConfig:
@@ -29,7 +29,6 @@ def _runtime_config(tmp_path: Path) -> KokoroRuntimeConfig:
         model_path=tmp_path / "Kokoro_no_espeak.gguf",
         n_threads=2,
         timeout_seconds=30,
-        sampling=SamplingParams(temperature=1.0, topk=50, repetition_penalty=1.0, top_p=1.0),
     )
 
 

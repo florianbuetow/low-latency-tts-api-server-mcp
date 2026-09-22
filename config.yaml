@@ -8,9 +8,5 @@ save_wav: true
 simplify_punctuation: false
 n_threads: 8
 timeout_seconds: 120
-temperature: 1.0
-topk: 50
-repetition_penalty: 1.0
-top_p: 1.0
 host: 0.0.0.0
 port: 12000

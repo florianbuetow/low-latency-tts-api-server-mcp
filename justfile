@@ -45,6 +45,7 @@ help:
     @echo ""
     @printf "\033[0;33mSetup & Lifecycle:\033[0m\n"
     @printf "  %-40s %s\n" "init" "Initialize the development environment"
+    @printf "  %-40s %s\n" "build-tts" "Clone, patch and build the TTS.cpp binaries"
     @printf "  %-40s %s\n" "download" "Download the Kokoro TTS model"
     @printf "  %-40s %s\n" "destroy" "Destroy the virtual environment"
     @printf "  %-40s %s\n" "check" "Check prerequisites"
@@ -55,6 +56,7 @@ help:
     @printf "  %-40s %s\n" "start" "Start the FastAPI TTS server"
     @printf "  %-40s %s\n" "stop" "Stop the FastAPI TTS server"
     @printf "  %-40s %s\n" "status" "Check if the TTS server is running"
+    @printf "  %-40s %s\n" "on-demand" "Speak <voice> <text> via the API, auto-starting the server"
     @printf "  %-40s %s\n" "mcp-install" "Install MCP server Node dependencies"
     @printf "  %-40s %s\n" "mcp-start" "Start the Kokoro MCP stdio relay"
     @printf "  %-40s %s\n" "mcp-typecheck" "Type-check the Kokoro MCP TypeScript relay"
@@ -80,7 +82,7 @@ help:
     @echo ""
 
 # Initialize the development environment
-init: check
+init: check build-tts
     @echo ""
     @printf "\033[0;34m=== Initializing Development Environment ===\033[0m\n"
     @mkdir -p reports/coverage
@@ -99,6 +101,13 @@ init: check
         fi; \
     fi
     @printf "\033[0;32m✓ Development environment ready\033[0m\n"
+    @echo ""
+
+# Clone, patch and build the TTS.cpp binaries
+build-tts:
+    @echo ""
+    @printf "\033[0;34m=== Building TTS.cpp Binaries ===\033[0m\n"
+    @bash scripts/build-tts.sh
     @echo ""
 
 # Download the Kokoro TTS model
@@ -135,6 +144,20 @@ check:
         exit 1; \
     fi
     @printf "\033[0;32m✓ uv is installed\033[0m\n"
+    @if ! command -v git >/dev/null 2>&1; then \
+        printf "\033[0;31m✗ Error: git is not installed\033[0m\n"; \
+        printf "  git is required to fetch and patch TTS.cpp\n"; \
+        echo ""; \
+        exit 1; \
+    fi
+    @printf "\033[0;32m✓ git is installed\033[0m\n"
+    @if ! command -v cmake >/dev/null 2>&1; then \
+        printf "\033[0;31m✗ Error: cmake is not installed\033[0m\n"; \
+        printf "  Install with: brew install cmake\n"; \
+        echo ""; \
+        exit 1; \
+    fi
+    @printf "\033[0;32m✓ cmake is installed\033[0m\n"
     @echo ""
 
 # Run the interactive chat
@@ -182,6 +205,41 @@ status:
         printf "\033[0;31m✗ Server is not running\033[0m\n"
         exit 1
     fi
+    echo ""
+
+# Speak text via the API, auto-starting the server in the background if down
+on-demand voice text:
+    #!/usr/bin/env bash
+    set -e
+    echo ""
+    printf "\033[0;34m=== Speaking On Demand ===\033[0m\n"
+    PORT=$(uv run python3 -c "import yaml; print(yaml.safe_load(open('config.yaml'))['port'])")
+    HOST=$(uv run python3 -c "import yaml; print(yaml.safe_load(open('config.yaml'))['host'])")
+    CONNECT_HOST="$HOST"
+    if [ "$CONNECT_HOST" = "0.0.0.0" ]; then
+        CONNECT_HOST="127.0.0.1"
+    fi
+    BASE_URL="http://${CONNECT_HOST}:${PORT}"
+    if ! curl -s --max-time 2 "$BASE_URL/health" | grep -q '"ok"'; then
+        printf "\033[0;33m⚠ Server not running — starting it in the background...\033[0m\n"
+        nohup uv run -m src.server >/dev/null 2>&1 &
+        WAITED=0
+        until curl -s --max-time 2 "$BASE_URL/health" | grep -q '"ok"'; do
+            if [ "$WAITED" -ge 60 ]; then
+                printf "\033[0;31m✗ Server did not become healthy within 60s\033[0m\n"
+                echo ""
+                exit 1
+            fi
+            sleep 1
+            WAITED=$((WAITED + 1))
+        done
+        printf "\033[0;32m✓ Server started (%s)\033[0m\n" "$BASE_URL"
+    fi
+    VOICE_ARG={{quote(voice)}}
+    TEXT_ARG={{quote(text)}}
+    PAYLOAD=$(uv run python3 -c "import json, sys; print(json.dumps({'text': sys.argv[1], 'voice': sys.argv[2]}))" "$TEXT_ARG" "$VOICE_ARG")
+    curl -sS -f -X POST "$BASE_URL/say" -H "Content-Type: application/json" -d "$PAYLOAD" >/dev/null
+    printf "\033[0;32m✓ Sent to TTS (voice: %s)\033[0m\n" "$VOICE_ARG"
     echo ""
 
 # Install MCP server dependencies

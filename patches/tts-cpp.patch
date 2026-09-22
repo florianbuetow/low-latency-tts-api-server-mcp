@@ -1,0 +1,62 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index eba3fcc..203195e 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -147,4 +147,4 @@ if (TTS_BUILD_EXAMPLES)
+     add_subdirectory(examples)
+ endif()
+ 
+-add_subdirectory(tests)
++# add_subdirectory(tests)  # disabled by patches/tts-cpp.patch
+diff --git a/examples/CMakeLists.txt b/examples/CMakeLists.txt
+index 92cb14f..d18c0bb 100644
+--- a/examples/CMakeLists.txt
++++ b/examples/CMakeLists.txt
+@@ -5,8 +5,5 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR})
+ if (EMSCRIPTEN)
+ else()
+     add_subdirectory(cli)
+-    add_subdirectory(perf_battery)
+-    add_subdirectory(quantize)
+-    add_subdirectory(server)
+     add_subdirectory(phonemize)
+ endif()
+diff --git a/examples/cli/cli.cpp b/examples/cli/cli.cpp
+index 29edbed..c08ea16 100644
+--- a/examples/cli/cli.cpp
++++ b/examples/cli/cli.cpp
+@@ -76,14 +76,18 @@ int main(int argc, const char ** argv) {
+         *args.get_int_param("--max-tokens"),
+         *args.get_float_param("--top-p")};
+ 
++    const int64_t tts_load_start_us{ggml_time_us()};
+     unique_ptr<tts_generation_runner> runner{runner_from_file(args.get_string_param("--model-path").c_str(), *args.get_int_param("--n-threads"), config, !args.get_bool_param("--use-metal"))};
++    printf("load time = %.2f ms\n", (ggml_time_us() - tts_load_start_us) / 1000.0f);
+ 
+     if (!conditional_prompt.empty()) {
+         runner->update_conditional_prompt(text_encoder_path.c_str(), conditional_prompt.c_str());
+     }
+     tts_response data;
+ 
++    const int64_t tts_generate_start_us{ggml_time_us()};
+     runner->generate(args.get_string_param("--prompt").c_str(), data, config);
++    printf("generation time = %.2f ms\n", (ggml_time_us() - tts_generate_start_us) / 1000.0f);
+     if (data.n_outputs == 0) {
+         fprintf(stderr, "Got empty response for prompt, '%s'.\n", args.get_string_param("--prompt").c_str());
+         exit(1);
+diff --git a/src/models/kokoro/model.cpp b/src/models/kokoro/model.cpp
+index ceb23a8..ed38631 100644
+--- a/src/models/kokoro/model.cpp
++++ b/src/models/kokoro/model.cpp
+@@ -1420,8 +1420,9 @@ void kokoro_runner::generate(const char * prompt, tts_response & response, const
+   	// Kokoro users a utf-8 single character tokenizer so if the size of the prompt is smaller than the max context length without the
+   	// beginning of sentence and end of sentence tokens then we can compute it all at once.
+   	if (phonemized_prompt.size() < model->max_context_length - 2) {
+-  		// we preserved punctuation and Kokoro interprets these tokens as end of sentence tokens, so we have to remove them for all-at-once compute.
+-  		phonemized_prompt = strip(replace_any(phonemized_prompt, ".!?", ""));
++  		// Kokoro interprets '.', '!' and '?' as end of sentence tokens and they are real vocabulary entries (ids 4, 5 and 6),
++  		// so they are kept here to preserve sentence boundary prosody and inter-sentence pauses.
++  		phonemized_prompt = strip(phonemized_prompt);
+   		if (phonemized_prompt.empty()) {
+   			return;
+   		}
