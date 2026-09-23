@@ -91,6 +91,7 @@ def load_chat_config() -> ChatConfig:
     config = load_config()
     runtime = KokoroRuntimeConfig(
         tts_cli=Path(_require_str(config, "tts_cli")),
+        phonemize_cli=Path(_require_str(config, "phonemize_cli")),
         model_path=Path(_require_str(config, "model")),
         n_threads=_require_int(config, "n_threads"),
         timeout_seconds=_require_int(config, "timeout_seconds"),

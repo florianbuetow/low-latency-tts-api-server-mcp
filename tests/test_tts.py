@@ -22,6 +22,7 @@ from low_latency_tts_service_mcp.tts import (
     kokoro_voices,
     read_wav_mono_float32,
     simplify_punctuation,
+    text_to_phonemes,
     validate_runtime_config,
     validate_voice,
 )
@@ -31,10 +32,14 @@ def _runtime_config(tmp_path: Path) -> KokoroRuntimeConfig:
     tts_cli = tmp_path / "tts-cli"
     tts_cli.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     tts_cli.chmod(0o755)
+    phonemize_cli = tmp_path / "phonemize"
+    phonemize_cli.write_text("#!/bin/sh\necho 'fallback-phonemes'\n", encoding="utf-8")
+    phonemize_cli.chmod(0o755)
     model_path = tmp_path / "Kokoro_no_espeak.gguf"
     model_path.write_bytes(b"fake")
     return KokoroRuntimeConfig(
         tts_cli=tts_cli,
+        phonemize_cli=phonemize_cli,
         model_path=model_path,
         n_threads=4,
         timeout_seconds=30,
@@ -74,6 +79,7 @@ def test_build_kokoro_command_uses_voice(tmp_path: Path) -> None:
         str(config.tts_cli),
         "--model-path",
         str(config.model_path),
+        "--phonemes",
         "--prompt",
         "hello world",
         "--save-path",
@@ -85,6 +91,18 @@ def test_build_kokoro_command_uses_voice(tmp_path: Path) -> None:
     )
 
 
+def test_text_to_phonemes_uses_misaki_lexicon(tmp_path: Path) -> None:
+    config = _runtime_config(tmp_path)
+
+    assert text_to_phonemes(config, "The tools are ready.") == "ðə tˈulz ɑɹ ɹˈɛdi."
+
+
+def test_text_to_phonemes_falls_back_to_tts_cpp_for_unknown_words(tmp_path: Path) -> None:
+    config = _runtime_config(tmp_path)
+
+    assert text_to_phonemes(config, "kubectl") == "fallback-phonemes"
+
+
 def test_validate_runtime_config_requires_files(tmp_path: Path) -> None:
     config = _runtime_config(tmp_path)
 
@@ -92,6 +110,7 @@ def test_validate_runtime_config_requires_files(tmp_path: Path) -> None:
 
     missing = KokoroRuntimeConfig(
         tts_cli=config.tts_cli,
+        phonemize_cli=config.phonemize_cli,
         model_path=tmp_path / "missing.gguf",
         n_threads=config.n_threads,
         timeout_seconds=config.timeout_seconds,

@@ -17,7 +17,7 @@ Low-latency local text-to-speech powered by Kokoro through [TTS.cpp](https://git
 | WAV Output | Generated audio is saved as timestamped WAV files under `data/output/` when enabled |
 | Explicit Runtime Config | TTS.cpp binary, GGUF model path, thread count, host, port, and playback settings are read from `config.yaml` |
 
-Under the hood, the project shells out to a local [TTS.cpp](https://github.com/mmwillet/TTS.cpp) `tts-cli` binary for Kokoro generation, uses [sounddevice](https://python-sounddevice.readthedocs.io/) for audio output, and uses [FastAPI](https://fastapi.tiangolo.com/) for the HTTP server. The MCP server is a lightweight TypeScript stdio-to-HTTP relay using the [Model Context Protocol SDK](https://modelcontextprotocol.io/).
+Under the hood, the project converts text to phonemes with [misaki](https://github.com/hexgrad/misaki), the grapheme-to-phoneme library Kokoro was trained with, then shells out to a local [TTS.cpp](https://github.com/mmwillet/TTS.cpp) `tts-cli` binary for Kokoro generation. Words missing from misaki's lexicons fall back to the phonemizer built into the Kokoro GGUF. It uses [sounddevice](https://python-sounddevice.readthedocs.io/) for audio output, and uses [FastAPI](https://fastapi.tiangolo.com/) for the HTTP server. The MCP server is a lightweight TypeScript stdio-to-HTTP relay using the [Model Context Protocol SDK](https://modelcontextprotocol.io/).
 
 ## Design Principles
 
@@ -137,7 +137,7 @@ Run automatically by `just init`, and a no-op once the binaries exist — delete
 | `TTS_CPP_COMMIT` in `scripts/build-tts.sh` | The pinned upstream TTS.cpp commit |
 | `patches/tts-cpp.patch` | Local changes applied on top of that commit |
 
-The patch keeps `.`, `!` and `?` in the phonemized prompt so Kokoro produces sentence-boundary pauses instead of running sentences together, builds the `phonemize` helper for inspecting phonemes, trims unused example targets, and adds load and generation timing output. The ggml Accelerate, BLAS and Metal backends are pinned off so every machine builds the same CPU binary and generates identical audio.
+The patch adds a `--phonemes` flag so `tts-cli` accepts misaki's phoneme string directly instead of re-phonemizing it, keeps `.`, `!` and `?` in the phonemized prompt so Kokoro produces sentence-boundary pauses instead of running sentences together, builds the `phonemize` helper used as the fallback for unknown words, trims unused example targets, and adds load and generation timing output. The ggml Accelerate, BLAS and Metal backends are pinned off so every machine builds the same CPU binary and generates identical audio.
 
 To move to a newer upstream TTS.cpp, bump `TTS_CPP_COMMIT`, delete `vendor/`, and re-run. If the patch no longer applies, re-create it with `git -C vendor/TTS.cpp diff > patches/tts-cpp.patch`.
 
@@ -175,6 +175,7 @@ TTS and server runtime settings live in `config.yaml` at the project root. Some 
 
 ```yaml
 tts_cli: ./vendor/TTS.cpp/build/bin/tts-cli
+phonemize_cli: ./vendor/TTS.cpp/build/bin/phonemize
 model: ./data/models/Kokoro_no_espeak.gguf
 output_dir: ./data/output
 sample_rate: 24000
@@ -191,6 +192,7 @@ port: 12000
 | Key | Description |
 |-----|-------------|
 | `tts_cli` | Path to the local TTS.cpp `tts-cli` executable |
+| `phonemize_cli` | Path to the TTS.cpp `phonemize` executable, used for words misaki does not know |
 | `model` | Path to `Kokoro_no_espeak.gguf` |
 | `output_dir` | Directory for generated WAV files |
 | `sample_rate` | Expected WAV sample rate in Hz |

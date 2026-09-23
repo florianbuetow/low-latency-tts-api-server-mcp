@@ -19,6 +19,7 @@ from src.main import (
 def _base_config() -> dict[str, object]:
     return {
         "tts_cli": "./vendor/TTS.cpp/build/bin/tts-cli",
+        "phonemize_cli": "./vendor/TTS.cpp/build/bin/phonemize",
         "model": "./data/models/Kokoro_no_espeak.gguf",
         "output_dir": "./data/output",
         "sample_rate": 24000,

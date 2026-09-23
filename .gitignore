@@ -67,6 +67,9 @@ models/
 node_modules/
 mcp/node_modules/
 
+# Scratch files
+*.tmp
+
 # macOS
 .DS_Store
 .AppleDouble

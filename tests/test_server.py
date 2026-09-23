@@ -26,6 +26,7 @@ from low_latency_tts_service_mcp.tts import KokoroRuntimeConfig
 def _runtime_config(tmp_path: Path) -> KokoroRuntimeConfig:
     return KokoroRuntimeConfig(
         tts_cli=tmp_path / "tts-cli",
+        phonemize_cli=tmp_path / "phonemize",
         model_path=tmp_path / "Kokoro_no_espeak.gguf",
         n_threads=2,
         timeout_seconds=30,

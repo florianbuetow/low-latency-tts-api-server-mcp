@@ -224,10 +224,15 @@ NODE
 def _write_config(tmp_path: Path, tts_cli: Path, host: str, port: int) -> Path:
     model_path = tmp_path / "Kokoro_no_espeak.gguf"
     model_path.write_bytes(b"fake model")
+    # Every word in these tests is in misaki's lexicon, so the fallback must never run.
+    phonemize_cli = tmp_path / "phonemize"
+    phonemize_cli.write_text("#!/bin/sh\necho 'unexpected phonemize fallback call' >&2\nexit 1\n", encoding="utf-8")
+    phonemize_cli.chmod(0o755)
     output_dir = tmp_path / "output"
     config_path = tmp_path / "config.yaml"
     lines = [
         f"tts_cli: {json.dumps(str(tts_cli))}",
+        f"phonemize_cli: {json.dumps(str(phonemize_cli))}",
         f"model: {json.dumps(str(model_path))}",
         f"output_dir: {json.dumps(str(output_dir))}",
         "sample_rate: 24000",
@@ -339,7 +344,7 @@ def test_fastapi_lifespan_generates_wav_and_plays_audio(tmp_path: Path, monkeypa
     assert audio_file is not None
     assert Path(audio_file).is_file()
     assert "voice=bm_george" in call_log.read_text(encoding="utf-8")
-    assert "prompt=Hello service integration." in call_log.read_text(encoding="utf-8")
+    assert "prompt=həlˈO sˈɜɹvəs ˌɪntəɡɹˈAʃən." in call_log.read_text(encoding="utf-8")
     assert _RecordingOutputStream.started_count == 1
     assert _RecordingOutputStream.closed_count == 1
     assert len(_RecordingOutputStream.writes) == 2
@@ -400,4 +405,4 @@ def test_mcp_stdio_tools_drive_the_real_service(tmp_path: Path, monkeypatch: pyt
     assert Path(audio_file).is_file()
     log_text = call_log.read_text(encoding="utf-8")
     assert "voice=bm_george" in log_text
-    assert "prompt=Hello MCP integration." in log_text
+    assert "prompt=həlˈO ˌɛmsˌipˈi ˌɪntəɡɹˈAʃən." in log_text

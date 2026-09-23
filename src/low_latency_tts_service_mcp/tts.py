@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
+import functools
 import os
 import queue
 import re
@@ -18,6 +19,8 @@ import numpy as np
 import numpy.typing as npt
 import sounddevice as sd
 import yaml
+from misaki import en
+from misaki.token import MToken
 
 CONFIG_PATH = Path("config.yaml")
 OUTPUT_DIR = Path("data/output")
@@ -81,6 +84,7 @@ class KokoroRuntimeConfig:
     """All settings needed to execute one Kokoro TTS.cpp generation."""
 
     tts_cli: Path
+    phonemize_cli: Path
     model_path: Path
     n_threads: int
     timeout_seconds: int
@@ -159,6 +163,10 @@ def validate_runtime_config(config: KokoroRuntimeConfig) -> None:
         raise FileNotFoundError(f"tts-cli binary not found: {config.tts_cli}")
     if not os.access(config.tts_cli, os.X_OK):
         raise PermissionError(f"tts-cli is not executable: {config.tts_cli}")
+    if not config.phonemize_cli.is_file():
+        raise FileNotFoundError(f"phonemize binary not found: {config.phonemize_cli}")
+    if not os.access(config.phonemize_cli, os.X_OK):
+        raise PermissionError(f"phonemize is not executable: {config.phonemize_cli}")
     if not config.model_path.is_file():
         raise FileNotFoundError(f"Kokoro GGUF model not found: {config.model_path}")
     if config.n_threads <= 0:
@@ -173,14 +181,53 @@ def make_output_path(output_dir: Path) -> Path:
     return output_dir / f"speech_{timestamp}.wav"
 
 
-def build_kokoro_command(config: KokoroRuntimeConfig, text: str, voice: str, output_path: Path) -> tuple[str, ...]:
-    """Build the exact TTS.cpp command for one Kokoro generation."""
+@functools.cache
+def _g2p(phonemize_cli: Path, model_path: Path, timeout_seconds: int) -> en.G2P:
+    """Build the misaki grapheme-to-phoneme converter once per configuration.
+
+    misaki is the G2P library Kokoro was trained with. Words missing from its
+    lexicons fall back to the TTS.cpp phonemizer built into the Kokoro GGUF.
+    """
+
+    @functools.cache
+    def phonemize_word(word: str) -> str:
+        try:
+            completed = subprocess.run(
+                (str(phonemize_cli), "--phonemizer-path", str(model_path), "--prompt", word),
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=timeout_seconds,
+            )
+        except subprocess.CalledProcessError as error:
+            raise RuntimeError(_format_cli_failure(error)) from error
+        except subprocess.TimeoutExpired as error:
+            raise TimeoutError(f"TTS.cpp phonemize timed out after {timeout_seconds}s: {error.cmd}") from error
+        return completed.stdout.strip()
+
+    def fallback(token: MToken) -> tuple[str, int]:
+        return phonemize_word(token.text), 1
+
+    return en.G2P(trf=False, british=False, fallback=fallback)
+
+
+def text_to_phonemes(config: KokoroRuntimeConfig, text: str) -> str:
+    """Convert text into the Kokoro phoneme string handed to tts-cli."""
+    phonemes, _tokens = _g2p(config.phonemize_cli, config.model_path, config.timeout_seconds)(text)
+    if not phonemes.strip():
+        raise ValueError(f"Text produced no phonemes: {text!r}")
+    return phonemes
+
+
+def build_kokoro_command(config: KokoroRuntimeConfig, phonemes: str, voice: str, output_path: Path) -> tuple[str, ...]:
+    """Build the exact TTS.cpp command for one Kokoro generation from a phoneme string."""
     return (
         str(config.tts_cli),
         "--model-path",
         str(config.model_path),
+        "--phonemes",
         "--prompt",
-        text,
+        phonemes,
         "--save-path",
         str(output_path),
         "--n-threads",
@@ -208,7 +255,7 @@ def generate_wav(config: KokoroRuntimeConfig, text: str, voice: str, output_path
     if output_path.exists():
         raise FileExistsError(f"Refusing to overwrite existing output: {output_path}")
 
-    command = build_kokoro_command(config, text, voice, output_path)
+    command = build_kokoro_command(config, text_to_phonemes(config, text), voice, output_path)
     try:
         subprocess.run(
             command,

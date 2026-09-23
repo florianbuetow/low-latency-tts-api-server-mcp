@@ -22,12 +22,31 @@ index 92cb14f..d18c0bb 100644
      add_subdirectory(phonemize)
  endif()
 diff --git a/examples/cli/cli.cpp b/examples/cli/cli.cpp
-index 29edbed..c08ea16 100644
+index 29edbed..df937fd 100644
 --- a/examples/cli/cli.cpp
 +++ b/examples/cli/cli.cpp
-@@ -76,14 +76,18 @@ int main(int argc, const char ** argv) {
+@@ -46,6 +46,7 @@ int main(int argc, const char ** argv) {
+     args.add_argument(string_arg("--espeak-voice-id", "(OPTIONAL) The espeak voice id to use for phonemization. This should only be specified when the correct espeak voice cannot be inferred from the kokoro voice ( see MultiLanguage Configuration in the README for more info).", "-eid", false));
+     args.add_argument(int_arg("--max-tokens", "(OPTIONAL) The max audio tokens or token batches to generate where each represents approximates 11 ms of audio. Only applied to Dia generation. If set to zero as is its default then the default max generation size. Warning values under 15 are not supported.", "-mt", false, &default_max_tokens));
+     args.add_argument(float_arg("--top-p", "(OPTIONAL) the sum of probabilities to sample over. Must be a value between 0.0 and 1.0. Defaults to 1.0.", "-tp", false, &default_top_p));
++    args.add_argument(bool_arg("--phonemes", "(OPTIONAL) Treat the prompt as an already phonemized string and skip phonemization. Only applied to Kokoro generation.", "-ph"));
+     register_play_tts_response_args(args);
+     args.parse(argc, argv);
+     if (args.for_help) {
+@@ -66,7 +67,7 @@ int main(int argc, const char ** argv) {
+         exit(1);
+     }
+ 
+-    const generation_configuration config{
++    generation_configuration config{
+         args.get_string_param("--voice"),
+         *args.get_int_param("--topk"),
+         *args.get_float_param("--temperature"),
+@@ -75,15 +76,20 @@ int main(int argc, const char ** argv) {
+         args.get_string_param("--espeak-voice-id"),
          *args.get_int_param("--max-tokens"),
          *args.get_float_param("--top-p")};
++    config.prompt_is_phonemes = args.get_bool_param("--phonemes");
  
 +    const int64_t tts_load_start_us{ggml_time_us()};
      unique_ptr<tts_generation_runner> runner{runner_from_file(args.get_string_param("--model-path").c_str(), *args.get_int_param("--n-threads"), config, !args.get_bool_param("--use-metal"))};
@@ -44,11 +63,30 @@ index 29edbed..c08ea16 100644
      if (data.n_outputs == 0) {
          fprintf(stderr, "Got empty response for prompt, '%s'.\n", args.get_string_param("--prompt").c_str());
          exit(1);
+diff --git a/include/common.h b/include/common.h
+index ec05861..1dc94d4 100644
+--- a/include/common.h
++++ b/include/common.h
+@@ -63,6 +63,8 @@ struct generation_configuration {
+     std::string voice = "";
+     bool sample = true;
+     std::string espeak_voice_id = "";
++    // When true the prompt is already a phoneme string and phonemization is skipped (Kokoro only).
++    bool prompt_is_phonemes = false;
+ };
+ 
+ struct tts_runner {
 diff --git a/src/models/kokoro/model.cpp b/src/models/kokoro/model.cpp
-index ceb23a8..ed38631 100644
+index ceb23a8..3558b67 100644
 --- a/src/models/kokoro/model.cpp
 +++ b/src/models/kokoro/model.cpp
-@@ -1420,8 +1420,9 @@ void kokoro_runner::generate(const char * prompt, tts_response & response, const
+@@ -1415,13 +1415,14 @@ void kokoro_runner::generate(const char * prompt, tts_response & response, const
+     std::string normalized{prompt};
+     normalized = replace_any(prompt, ",;:", "--");
+     normalized = replace_any(prompt, "\n", " ");
+-    std::string phonemized_prompt = phmzr->text_to_phonemes(normalized);
++    std::string phonemized_prompt = config.prompt_is_phonemes ? normalized : phmzr->text_to_phonemes(normalized);
+ 
    	// Kokoro users a utf-8 single character tokenizer so if the size of the prompt is smaller than the max context length without the
    	// beginning of sentence and end of sentence tokens then we can compute it all at once.
    	if (phonemized_prompt.size() < model->max_context_length - 2) {

@@ -5,11 +5,15 @@ description = "A Python CLI application"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "en-core-web-sm>=3.8.0",
     "fastapi>=0.115.0",
+    "misaki>=0.9.4",
+    "num2words>=0.5.14",
     "numpy>=1.26.0",
     "pydantic>=2.0.0",
     "pyyaml>=6.0",
     "sounddevice>=0.4.6",
+    "spacy>=3.8.0",
     "uvicorn>=0.34.0",
 ]
 
@@ -117,6 +121,7 @@ markers = [
 
 [tool.mypy]
 python_version = "3.12"
+mypy_path = "stubs"
 strict = true
 warn_unused_configs = true
 no_implicit_reexport = true
@@ -216,6 +221,11 @@ json_output = "reports/deptry/deptry.json"
 DEP002 = [
     "pytestarch",  # Used in tests/architecture/ only
     "uvicorn",  # Used as CLI server runner.
+    # Runtime requirements of misaki.en. misaki only declares them behind its [en]
+    # extra, which also pulls torch and espeak; they are listed directly instead.
+    "en-core-web-sm",
+    "num2words",
+    "spacy",
 ]
 
 [tool.codespell]
@@ -228,6 +238,10 @@ skip = ".git,.venv,venv,build,dist,reports,*.lock,uv.lock"
 
 # Use external ignore file for maintainability
 ignore-words = "config/codespell/ignore.txt"
+
+[tool.uv.sources]
+# spaCy models are not on PyPI; misaki loads this one for tokenization.
+en-core-web-sm = { url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl" }
 
 [tool.uv]
 # Supply-chain protection: ignore packages published in the last 7 days,
