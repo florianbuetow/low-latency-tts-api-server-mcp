@@ -103,6 +103,7 @@ class PlaybackJob:
 
 def clean_text(text: str) -> str:
     """Strip text and collapse whitespace while preserving single newlines."""
+    text = re.sub(r"(?i)\bmicrosoft\b", "Micro-soft", text)
     stripped = text.strip()
     stripped = re.sub(r"\t", " ", stripped)
     stripped = re.sub(r" {2,}", " ", stripped)
@@ -116,8 +117,9 @@ def simplify_punctuation(text: str) -> str:
     simplified = simplified.replace("\uff0c", "")
     simplified = simplified.replace("...", ".")
     simplified = simplified.replace("--", ".")
+    simplified = simplified.replace("\u2019", "'")  # preserve right single quote as apostrophe
 
-    for char in "!?;:()[]{}\"'`\u2014\u2013\u2026\u201c\u201d\u2018\u2019":
+    for char in '!?;:()[]{}"`\u2014\u2013\u2026\u201c\u201d\u2018':
         simplified = simplified.replace(char, ".")
 
     simplified = re.sub(r"\.\s*(?:\.\s*)+", ".", simplified)
