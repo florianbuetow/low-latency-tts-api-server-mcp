@@ -13,9 +13,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added text file to MP3 conversion via the `--input-file` and `--output` options.
 - Added `just convert` for batch speech synthesis of text files.
 
+### Changed
+
+- MP3 encoding now uses ffmpeg instead of soundfile dependency.
+
 ### Removed
 
 - Removed the `CLAUDE.md` symlink.
+
+### Fixed
+
+- Fixed pronunciation of Microsoft and preserved apostrophes in simplified punctuation.
 
 ## 2026-09-23
 
