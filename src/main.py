@@ -3,6 +3,9 @@
 Reads text from the terminal line by line, synthesizes each submission with the
 patched TTS.cpp Kokoro CLI, and plays it back. Generation of the next line
 overlaps playback of the current one, so there is no gap between utterances.
+
+With --input-file and --output, the same synthesis converts a text file into an
+MP3 file instead of playing it.
 """
 
 from __future__ import annotations
@@ -11,15 +14,21 @@ import argparse
 import dataclasses
 import datetime
 import queue
+import re
 import sys
+import tempfile
 import termios
 import threading
 import tty
 from pathlib import Path
 
+import numpy as np
+import soundfile as sf
+
 from low_latency_tts_service_mcp.tts import (
     OUTPUT_DIR,
     AudioPlayer,
+    FloatAudio,
     KokoroRuntimeConfig,
     PlaybackJob,
     clean_text,
@@ -27,6 +36,7 @@ from low_latency_tts_service_mcp.tts import (
     kokoro_voices,
     load_config,
     make_output_path,
+    read_wav_mono_float32,
     simplify_punctuation,
     validate_runtime_config,
     validate_voice,
@@ -236,6 +246,8 @@ def create_argument_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="List previously generated audio files and exit",
     )
+    parser.add_argument("--input-file", type=Path, help="Text file to convert to MP3 (requires --output and --voice)")
+    parser.add_argument("--output", type=Path, help="MP3 file to write (requires --input-file and --voice)")
     return parser
 
 
@@ -416,6 +428,105 @@ def run_repl(work_queue: queue.Queue[str | None], simplify_punct: bool) -> None:
         print()
 
 
+def split_paragraphs(text: str, simplify_punct: bool) -> list[str]:
+    """Split text on blank lines and prepare each paragraph like a chat submission.
+
+    Args:
+        text: Raw file contents.
+        simplify_punct: Whether punctuation simplification is enabled.
+
+    Returns:
+        Non-empty prepared paragraphs in input order.
+    """
+    paragraphs = (prepare_text(block, simplify_punct) for block in re.split(r"\n\s*\n", text))
+    return [paragraph for paragraph in paragraphs if paragraph]
+
+
+def synthesize_paragraphs(config: ChatConfig, paragraphs: list[str], voice: str, work_dir: Path) -> FloatAudio:
+    """Synthesize each paragraph to a WAV and concatenate the audio.
+
+    Args:
+        config: Chat configuration loaded from config.yaml.
+        paragraphs: Prepared paragraphs to synthesize.
+        voice: Voice to use for synthesis.
+        work_dir: Directory for intermediate WAV files.
+
+    Returns:
+        Concatenated mono float32 samples.
+
+    Raises:
+        ValueError: If a generated WAV has an unexpected sample rate.
+    """
+    chunks: list[FloatAudio] = []
+    for index, paragraph in enumerate(paragraphs, 1):
+        print(f"  [{index}/{len(paragraphs)}] {paragraph[:60]!r}")
+        wav_path = generate_wav(config.runtime, paragraph, voice, work_dir / f"paragraph_{index:05d}.wav")
+        audio, sample_rate = read_wav_mono_float32(wav_path)
+        if sample_rate != config.sample_rate:
+            raise ValueError(f"Expected {config.sample_rate} Hz WAV, got {sample_rate} Hz in {wav_path}")
+        chunks.append(audio)
+    return np.concatenate(chunks)
+
+
+def convert_file(voice: str, input_path: Path, output_path: Path) -> None:
+    """Convert a text file into an MP3 file using the chat synthesis pipeline.
+
+    Args:
+        voice: Voice to use for synthesis.
+        input_path: Text file to convert.
+        output_path: MP3 file to write.
+
+    Raises:
+        FileNotFoundError: If the input file does not exist.
+        ValueError: If the output is not an .mp3 path, the voice is unknown, or
+            the input has no text.
+    """
+    if output_path.suffix.lower() != ".mp3":
+        raise ValueError(f"Output file must have an .mp3 extension: {output_path}")
+    if not input_path.is_file():
+        raise FileNotFoundError(f"Input file not found: {input_path}")
+
+    config = load_chat_config()
+    validate_runtime_config(config.runtime)
+    validate_voice(voice, kokoro_voices())
+
+    paragraphs = split_paragraphs(input_path.read_text(encoding="utf-8"), config.simplify_punctuation_enabled)
+    if not paragraphs:
+        raise ValueError(f"Input file contains no text after cleaning: {input_path}")
+
+    print(f"\nModel: {config.runtime.model_path}")
+    print(f"Voice: {voice}")
+    print(f"Input: {input_path} ({len(paragraphs)} paragraphs)\n")
+
+    with tempfile.TemporaryDirectory() as work_dir:
+        audio = synthesize_paragraphs(config, paragraphs, voice, Path(work_dir))
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    sf.write(output_path, audio, config.sample_rate, format="MP3")
+    print(f"\nWrote {output_path} ({len(audio) / config.sample_rate:.1f}s)")
+
+
+def run_convert(voice: str | None, input_path: Path | None, output_path: Path | None) -> None:
+    """Validate the convert-mode arguments, skip existing output, and convert.
+
+    Args:
+        voice: Voice from --voice, or None.
+        input_path: Text file from --input-file, or None.
+        output_path: MP3 file from --output, or None.
+    """
+    if voice is None or input_path is None or output_path is None:
+        print("Error: --input-file, --output and --voice must be given together", file=sys.stderr)
+        sys.exit(1)
+    if output_path.exists():
+        print(f"Skipped: output already exists: {output_path} (delete it to regenerate)")
+        return
+    try:
+        convert_file(voice, input_path, output_path)
+    except (FileExistsError, FileNotFoundError, PermissionError, RuntimeError, TimeoutError, ValueError) as error:
+        print(f"Error: {error}", file=sys.stderr)
+        sys.exit(1)
+
+
 def main() -> None:
     """Entry point for the interactive Kokoro chat REPL."""
     parser = create_argument_parser()
@@ -423,6 +534,10 @@ def main() -> None:
 
     if args.list_outputs:
         list_outputs(OUTPUT_DIR)
+        return
+
+    if args.input_file is not None or args.output is not None:
+        run_convert(args.voice, args.input_file, args.output)
         return
 
     config = load_chat_config()

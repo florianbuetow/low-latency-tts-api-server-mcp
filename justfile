@@ -53,6 +53,7 @@ help:
     @echo ""
     @printf "\033[0;33mRun:\033[0m\n"
     @printf "  %-40s %s\n" "chat" "Run the interactive chat"
+    @printf "  %-40s %s\n" "convert <voice> <input> <output>" "Convert a text file into an MP3 file"
     @printf "  %-40s %s\n" "start" "Start the FastAPI TTS server"
     @printf "  %-40s %s\n" "stop" "Stop the FastAPI TTS server"
     @printf "  %-40s %s\n" "status" "Check if the TTS server is running"
@@ -169,6 +170,20 @@ chat:
 
 # Compatibility alias required by this repo's agent rules
 run: chat
+
+# Convert a text file into an MP3 file
+convert voice input output:
+    #!/usr/bin/env bash
+    echo ""
+    printf "\033[0;34m=== Converting Text File to MP3 ===\033[0m\n"
+    if uv run -m src.main --voice {{quote(voice)}} --input-file {{quote(input)}} --output {{quote(output)}}; then
+        printf "\033[0;32m✓ convert completed successfully\033[0m\n"
+    else
+        printf "\033[0;31m✗ convert failed\033[0m\n"
+        echo ""
+        exit 1
+    fi
+    echo ""
 
 # Start the FastAPI TTS server
 start:

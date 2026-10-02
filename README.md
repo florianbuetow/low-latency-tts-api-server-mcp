@@ -222,6 +222,7 @@ bf_emma, bf_isabella, bf_lily, bm_daniel, bm_fable, bm_george
 |---------|-------------|
 | `just chat` | Start the interactive chat REPL (type text, hear speech) |
 | `just run` | Alias for `just chat` |
+| `just convert <voice> <input> <output>` | Convert a text file into an MP3 file |
 | `just start` | Start the FastAPI TTS server in the foreground |
 | `just stop` | Stop the running server |
 | `just status` | Check if the server is running |
@@ -238,6 +239,14 @@ just chat
 Starts an interactive terminal REPL that synthesizes and plays each submission with the local TTS.cpp `tts-cli`. Generation for the next line overlaps playback of the current one, so there is no gap between utterances. The REPL drives the shared TTS runtime directly and does not require the FastAPI server to be running.
 
 If `--voice` is not supplied, the REPL prompts you to pick a voice; otherwise it uses the one you pass. It reads settings (model, sample rate, `save_wav`, and more) from `config.yaml` and fails immediately if the configured `tts-cli` or GGUF model is missing.
+
+### Text File to MP3
+
+```bash
+just convert af_heart data/input/story.txt data/output/story.mp3
+```
+
+Synthesizes a text file with the same pipeline as `just chat` and writes the result as an MP3 instead of playing it. Each blank-line-separated paragraph is handled like one chat submission; the paragraphs are concatenated into a single mono MP3 at `sample_rate`. The output path must end in `.mp3`; its parent directories are created. If the output file already exists, the conversion is skipped — delete the file to regenerate it.
 
 Input controls:
 
