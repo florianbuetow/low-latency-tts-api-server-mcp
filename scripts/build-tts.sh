@@ -6,6 +6,10 @@
 # needed to reproduce it lives in this repository: the upstream commit pinned
 # below and patches/tts-cpp.patch.
 #
+# Re-running is safe and cheap: when patches/tts-cpp.patch changed, the checkout
+# is reset to the pinned commit and the new patch is applied; cmake then
+# rebuilds only what changed.
+#
 # To move to a newer upstream TTS.cpp: bump TTS_CPP_COMMIT, delete vendor/,
 # re-run. If the patch no longer applies, re-create it with:
 #   git -C vendor/TTS.cpp diff > patches/tts-cpp.patch
@@ -19,11 +23,6 @@ CHECKOUT="$ROOT/vendor/TTS.cpp"
 PATCH="$ROOT/patches/tts-cpp.patch"
 TTS_CLI="$CHECKOUT/build/bin/tts-cli"
 PHONEMIZE="$CHECKOUT/build/bin/phonemize"
-
-if [ -f "$TTS_CLI" ] && [ -f "$PHONEMIZE" ]; then
-    printf "\033[0;32m✓ TTS.cpp binaries already built (delete vendor/ to force a rebuild)\033[0m\n"
-    exit 0
-fi
 
 for tool in git cmake; do
     if ! command -v "$tool" >/dev/null 2>&1; then
@@ -46,10 +45,15 @@ if [ ! -d "$CHECKOUT/.git" ]; then
     git -C "$CHECKOUT" submodule update --init --recursive
 fi
 
-# Apply the patch only when it is not already applied, so re-running is safe.
+# Apply the patch only when it is not already applied. A checkout carrying an
+# older version of the patch is reset to the pinned commit first.
 if git -C "$CHECKOUT" apply --reverse --check "$PATCH" 2>/dev/null; then
     printf "\033[0;32m✓ Patch already applied\033[0m\n"
 else
+    if ! git -C "$CHECKOUT" diff --quiet; then
+        printf "\033[0;33m⚠ Checkout carries a different patch, resetting to %s\033[0m\n" "$TTS_CPP_COMMIT"
+        git -C "$CHECKOUT" reset --quiet --hard "$TTS_CPP_COMMIT"
+    fi
     printf "\033[0;34mApplying patches/tts-cpp.patch\033[0m\n"
     git -C "$CHECKOUT" apply "$PATCH"
 fi
@@ -65,7 +69,7 @@ cmake -S "$CHECKOUT" -B "$CHECKOUT/build" \
     -DGGML_ACCELERATE=OFF \
     -DGGML_BLAS=OFF \
     -DGGML_METAL=OFF > /dev/null
-cmake --build "$CHECKOUT/build" --target tts-cli phonemize -j "$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
+cmake --build "$CHECKOUT/build" --target tts-cli phonemize -j "$(sysctl -n hw.ncpu 2>/dev/null || nproc)" > /dev/null
 
 if [ ! -f "$TTS_CLI" ] || [ ! -f "$PHONEMIZE" ]; then
     printf "\033[0;31m✗ Error: build finished but the binaries are missing\033[0m\n"

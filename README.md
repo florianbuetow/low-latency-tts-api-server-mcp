@@ -2,7 +2,7 @@
 
 ![Made with AI](https://img.shields.io/badge/Made%20with-AI-333333?labelColor=f00) ![Verified by Humans](https://img.shields.io/badge/Verified%20by-Humans-333333?labelColor=brightgreen)
 
-Low-latency local text-to-speech powered by Kokoro through [TTS.cpp](https://github.com/mmwillet/TTS.cpp). The service shells out to a local `tts-cli` binary for fast Kokoro GGUF inference, then handles queued playback, status tracking, and MCP integration for AI agents. It offers a FastAPI server for HTTP clients, a TypeScript MCP relay for Claude Code, Claude Desktop, or any MCP-compatible client, and an interactive terminal chat REPL (`just chat`) for typing text and hearing it spoken right away.
+Low-latency local text-to-speech powered by Kokoro through [TTS.cpp](https://github.com/mmwillet/TTS.cpp). The service keeps the Kokoro GGUF loaded in one long-running local `tts-cli` process for fast inference, then handles queued playback, status tracking, and MCP integration for AI agents. It offers a FastAPI server for HTTP clients, a TypeScript MCP relay for Claude Code, Claude Desktop, or any MCP-compatible client, and an interactive terminal chat REPL (`just chat`) for typing text and hearing it spoken right away.
 
 ### Features
 
@@ -17,7 +17,7 @@ Low-latency local text-to-speech powered by Kokoro through [TTS.cpp](https://git
 | WAV Output | Generated audio is saved as timestamped WAV files under `data/output/` when enabled |
 | Explicit Runtime Config | TTS.cpp binary, GGUF model path, thread count, host, port, and playback settings are read from `config.yaml` |
 
-Under the hood, the project converts text to phonemes with [misaki](https://github.com/hexgrad/misaki), the grapheme-to-phoneme library Kokoro was trained with, then shells out to a local [TTS.cpp](https://github.com/mmwillet/TTS.cpp) `tts-cli` binary for Kokoro generation. Words missing from misaki's lexicons fall back to the phonemizer built into the Kokoro GGUF. It uses [sounddevice](https://python-sounddevice.readthedocs.io/) for audio output, and uses [FastAPI](https://fastapi.tiangolo.com/) for the HTTP server. The MCP server is a lightweight TypeScript stdio-to-HTTP relay using the [Model Context Protocol SDK](https://modelcontextprotocol.io/).
+Under the hood, the project converts text to phonemes with [misaki](https://github.com/hexgrad/misaki), the grapheme-to-phoneme library Kokoro was trained with, then hands them to a local [TTS.cpp](https://github.com/mmwillet/TTS.cpp) `tts-cli` process for Kokoro generation. That process is started once with `--serve`, loads the Kokoro GGUF a single time, and serves every request and every voice (the GGUF carries all voice packs); it is restarted automatically if it exits. Words missing from misaki's lexicons fall back to the phonemizer built into the Kokoro GGUF, which likewise runs as one persistent `phonemize --serve` process. It uses [sounddevice](https://python-sounddevice.readthedocs.io/) for audio output, and uses [FastAPI](https://fastapi.tiangolo.com/) for the HTTP server. The MCP server is a lightweight TypeScript stdio-to-HTTP relay using the [Model Context Protocol SDK](https://modelcontextprotocol.io/).
 
 ## Design Principles
 
@@ -137,7 +137,7 @@ Run automatically by `just init`, and a no-op once the binaries exist — delete
 | `TTS_CPP_COMMIT` in `scripts/build-tts.sh` | The pinned upstream TTS.cpp commit |
 | `patches/tts-cpp.patch` | Local changes applied on top of that commit |
 
-The patch adds a `--phonemes` flag so `tts-cli` accepts misaki's phoneme string directly instead of re-phonemizing it, keeps `.`, `!` and `?` in the phonemized prompt so Kokoro produces sentence-boundary pauses instead of running sentences together, builds the `phonemize` helper used as the fallback for unknown words, trims unused example targets, and adds load and generation timing output. The ggml Accelerate, BLAS and Metal backends are pinned off so every machine builds the same CPU binary and generates identical audio.
+The patch adds a `--phonemes` flag so `tts-cli` accepts misaki's phoneme string directly instead of re-phonemizing it, keeps `.`, `!` and `?` in the phonemized prompt so Kokoro produces sentence-boundary pauses instead of running sentences together, builds the `phonemize` helper used as the fallback for unknown words, trims unused example targets, adds load and generation timing output, and adds a `--serve` mode to `tts-cli` and `phonemize` that loads the model once and answers one request per stdin line (`<voice>\t<save-path>\t<phonemes>` for `tts-cli`, a word for `phonemize`) with `@@done\t<result>` or `@@error\t<message>`. The ggml Accelerate, BLAS and Metal backends are pinned off so every machine builds the same CPU binary and generates identical audio.
 
 To move to a newer upstream TTS.cpp, bump `TTS_CPP_COMMIT`, delete `vendor/`, and re-run. If the patch no longer applies, re-create it with `git -C vendor/TTS.cpp diff > patches/tts-cpp.patch`.
 
@@ -182,7 +182,7 @@ sample_rate: 24000
 mp3_sample_rate: 44100
 lead_silence_ms: 200
 default_voice: af_heart
-save_wav: true
+save_wav: false
 simplify_punctuation: false
 n_threads: 8
 timeout_seconds: 120

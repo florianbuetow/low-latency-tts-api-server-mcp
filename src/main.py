@@ -37,6 +37,7 @@ from low_latency_tts_service_mcp.tts import (
     generate_wav,
     kokoro_voices,
     load_config,
+    load_tts_model,
     make_output_path,
     read_wav_mono_float32,
     simplify_punctuation,
@@ -608,6 +609,7 @@ def main() -> None:
 
     config = load_chat_config()
     validate_runtime_config(config.runtime)
+    load_tts_model(config.runtime)
 
     voices = kokoro_voices()
     try:

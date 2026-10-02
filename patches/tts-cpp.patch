@@ -22,18 +22,86 @@ index 92cb14f..d18c0bb 100644
      add_subdirectory(phonemize)
  endif()
 diff --git a/examples/cli/cli.cpp b/examples/cli/cli.cpp
-index 29edbed..df937fd 100644
+index 29edbed..c7a7167 100644
 --- a/examples/cli/cli.cpp
 +++ b/examples/cli/cli.cpp
-@@ -46,6 +46,7 @@ int main(int argc, const char ** argv) {
+@@ -1,3 +1,5 @@
++#include <iostream>
++#include <string>
+ #include <thread>
+ 
+ #include "../../src/models/loaders.h"
+@@ -21,6 +23,39 @@ public:
+     }
+ };
+ 
++// Serve mode keeps the model loaded and handles one request per stdin line:
++//   <voice>\t<save-path>\t<phonemes>
++// Each request is answered on stdout with "@@done\t<save-path>" or "@@error\t<message>".
++// "@@ready" is printed once the model is loaded. The loop ends when stdin is closed.
++static int serve_requests(tts_generation_runner & runner, generation_configuration config) {
++    printf("@@ready\n");
++    fflush(stdout);
++    std::string line;
++    while (std::getline(std::cin, line)) {
++        const size_t first_tab = line.find('\t');
++        const size_t second_tab = first_tab == std::string::npos ? std::string::npos : line.find('\t', first_tab + 1);
++        if (second_tab == std::string::npos) {
++            printf("@@error\tmalformed request, expected <voice>\\t<save-path>\\t<phonemes>\n");
++            fflush(stdout);
++            continue;
++        }
++        config.voice = line.substr(0, first_tab);
++        const std::string save_path = line.substr(first_tab + 1, second_tab - first_tab - 1);
++        const std::string prompt = line.substr(second_tab + 1);
++        tts_response data;
++        runner.generate(prompt.c_str(), data, config);
++        if (data.n_outputs == 0) {
++            printf("@@error\tgot empty response for prompt '%s'\n", prompt.c_str());
++            fflush(stdout);
++            continue;
++        }
++        write_audio_file(data, save_path, runner.sampling_rate);
++        printf("@@done\t%s\n", save_path.c_str());
++        fflush(stdout);
++    }
++    return 0;
++}
++
+ int main(int argc, const char ** argv) {
+     const tts_timing_printer _{};
+     float default_temperature = 1.0f;
+@@ -31,7 +66,7 @@ int main(int argc, const char ** argv) {
+     float default_top_p = 1.0f;
+     arg_list args;
+     args.add_argument(string_arg("--model-path", "(REQUIRED) The local path of the gguf model file for Parler TTS mini or large v1, Dia, or Kokoro.", "-mp", true));
+-    args.add_argument(string_arg("--prompt", "(REQUIRED) The text prompt for which to generate audio in quotation markers.", "-p", true));
++    args.add_argument(string_arg("--prompt", "(REQUIRED unless --serve) The text prompt for which to generate audio in quotation markers.", "-p", false));
+     args.add_argument(string_arg("--save-path", "(OPTIONAL) The path to save the audio output to in a .wav format. Defaults to TTS.cpp.wav", "-sp", false, "TTS.cpp.wav"));
+     args.add_argument(float_arg("--temperature", "The temperature to use when generating outputs. Defaults to 1.0.", "-t", false, &default_temperature));
+     args.add_argument(int_arg("--n-threads", "The number of cpu threads to run generation with. Defaults to hardware concurrency. If hardware concurrency cannot be determined then it defaults to 1.", "-nt", false, &default_n_threads));
+@@ -46,6 +81,8 @@ int main(int argc, const char ** argv) {
      args.add_argument(string_arg("--espeak-voice-id", "(OPTIONAL) The espeak voice id to use for phonemization. This should only be specified when the correct espeak voice cannot be inferred from the kokoro voice ( see MultiLanguage Configuration in the README for more info).", "-eid", false));
      args.add_argument(int_arg("--max-tokens", "(OPTIONAL) The max audio tokens or token batches to generate where each represents approximates 11 ms of audio. Only applied to Dia generation. If set to zero as is its default then the default max generation size. Warning values under 15 are not supported.", "-mt", false, &default_max_tokens));
      args.add_argument(float_arg("--top-p", "(OPTIONAL) the sum of probabilities to sample over. Must be a value between 0.0 and 1.0. Defaults to 1.0.", "-tp", false, &default_top_p));
 +    args.add_argument(bool_arg("--phonemes", "(OPTIONAL) Treat the prompt as an already phonemized string and skip phonemization. Only applied to Kokoro generation.", "-ph"));
++    args.add_argument(bool_arg("--serve", "(OPTIONAL) Load the model once and serve phoneme requests from stdin until it is closed. Implies --phonemes.", "-sv"));
      register_play_tts_response_args(args);
      args.parse(argc, argv);
      if (args.for_help) {
-@@ -66,7 +67,7 @@ int main(int argc, const char ** argv) {
+@@ -53,6 +90,11 @@ int main(int argc, const char ** argv) {
+         exit(0);
+     }
+     args.validate();
++    const bool serve = args.get_bool_param("--serve");
++    if (!serve && args.get_string_param("--prompt").empty()) {
++        fprintf(stderr, "The '--prompt' argument is required unless '--serve' is passed.\n");
++        exit(1);
++    }
+ 
+     std::string conditional_prompt = args.get_string_param("--conditional-prompt");
+     std::string text_encoder_path = args.get_string_param("--text-encoder-path");
+@@ -66,7 +108,7 @@ int main(int argc, const char ** argv) {
          exit(1);
      }
  
@@ -42,15 +110,21 @@ index 29edbed..df937fd 100644
          args.get_string_param("--voice"),
          *args.get_int_param("--topk"),
          *args.get_float_param("--temperature"),
-@@ -75,15 +76,20 @@ int main(int argc, const char ** argv) {
+@@ -75,15 +117,26 @@ int main(int argc, const char ** argv) {
          args.get_string_param("--espeak-voice-id"),
          *args.get_int_param("--max-tokens"),
          *args.get_float_param("--top-p")};
-+    config.prompt_is_phonemes = args.get_bool_param("--phonemes");
++    config.prompt_is_phonemes = serve || args.get_bool_param("--phonemes");
  
 +    const int64_t tts_load_start_us{ggml_time_us()};
      unique_ptr<tts_generation_runner> runner{runner_from_file(args.get_string_param("--model-path").c_str(), *args.get_int_param("--n-threads"), config, !args.get_bool_param("--use-metal"))};
 +    printf("load time = %.2f ms\n", (ggml_time_us() - tts_load_start_us) / 1000.0f);
++
++    if (serve) {
++        const int status = serve_requests(*runner, config);
++        static_cast<void>(!runner.release()); // TODO the destructor doesn't work yet
++        return status;
++    }
  
      if (!conditional_prompt.empty()) {
          runner->update_conditional_prompt(text_encoder_path.c_str(), conditional_prompt.c_str());
@@ -63,6 +137,62 @@ index 29edbed..df937fd 100644
      if (data.n_outputs == 0) {
          fprintf(stderr, "Got empty response for prompt, '%s'.\n", args.get_string_param("--prompt").c_str());
          exit(1);
+diff --git a/examples/phonemize/phonemize.cpp b/examples/phonemize/phonemize.cpp
+index 636e6f4..670c94d 100644
+--- a/examples/phonemize/phonemize.cpp
++++ b/examples/phonemize/phonemize.cpp
+@@ -1,14 +1,18 @@
+ #include <stdio.h>
+ 
++#include <iostream>
++#include <string>
++
+ #include "../../src/models/kokoro/phonemizer.h"
+ #include "args.h"
+ 
+ int main(int argc, const char ** argv) {
+     arg_list args;
+     args.add_argument(string_arg("--phonemizer-path", "(OPTIONAL) The local path of the gguf phonemiser file for TTS.cpp phonemizer. This is required if not using espeak.", "-mp"));
+-    args.add_argument(string_arg("--prompt", "(REQUIRED) The text prompt to phonemize.", "-p", true));
++    args.add_argument(string_arg("--prompt", "(REQUIRED unless --serve) The text prompt to phonemize.", "-p", false));
+     args.add_argument(bool_arg("--use-espeak", "(OPTIONAL) Whether to use espeak to generate phonems.", "-ue"));
+     args.add_argument(string_arg("--espeak-voice-id", "(OPTIONAL) The voice id to use for espeak phonemization. Defaults to 'gmw/en-US'.", "-eid", false, "gmw/en-US"));
++    args.add_argument(bool_arg("--serve", "(OPTIONAL) Load the phonemizer once and phonemize one stdin line per request until stdin is closed. Each answer is printed as '@@done\\t<phonemes>'; '@@ready' is printed once loaded.", "-sv"));
+     args.parse(argc, argv);
+     if (args.for_help) {
+         args.help();
+@@ -19,6 +23,11 @@ int main(int argc, const char ** argv) {
+         fprintf(stderr, "The '--phonemizer-path' must be specified when '--use-espeak' is not true.\n");
+         exit(1);
+     }
++    const bool serve = args.get_bool_param("--serve");
++    if (!serve && args.get_string_param("--prompt").empty()) {
++        fprintf(stderr, "The '--prompt' argument is required unless '--serve' is passed.\n");
++        exit(1);
++    }
+ 
+     phonemizer * ph;
+     if (args.get_bool_param("--use-espeak")) {
+@@ -26,6 +35,19 @@ int main(int argc, const char ** argv) {
+     } else {
+         ph = phonemizer_from_file(args.get_string_param("--phonemizer-path"));
+     }
++
++    if (serve) {
++        fprintf(stdout, "@@ready\n");
++        fflush(stdout);
++        std::string line;
++        while (std::getline(std::cin, line)) {
++            std::string response = ph->text_to_phonemes(line);
++            fprintf(stdout, "@@done\t%s\n", response.c_str());
++            fflush(stdout);
++        }
++        return 0;
++    }
++
+     std::string response = ph->text_to_phonemes(args.get_string_param("--prompt"));
+     fprintf(stdout, "%s\n", response.c_str());
+     return 0;
 diff --git a/include/common.h b/include/common.h
 index ec05861..1dc94d4 100644
 --- a/include/common.h

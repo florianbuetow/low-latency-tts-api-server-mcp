@@ -1,11 +1,10 @@
-"""Tests for Kokoro TTS command execution and playback helpers."""
+"""Tests for the persistent Kokoro TTS.cpp processes and playback helpers."""
 
 from __future__ import annotations
 
-import subprocess
 import wave
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -16,34 +15,87 @@ from low_latency_tts_service_mcp.tts import (
     AudioPlayer,
     KokoroRuntimeConfig,
     PlaybackJob,
-    build_kokoro_command,
+    build_tts_request,
+    build_tts_serve_command,
     clean_text,
     generate_wav,
     kokoro_voices,
+    load_tts_model,
     read_wav_mono_float32,
     simplify_punctuation,
     text_to_phonemes,
+    unload_tts_model,
     validate_runtime_config,
     validate_voice,
 )
 
 
-def _runtime_config(tmp_path: Path) -> KokoroRuntimeConfig:
+def _fake_tts_cli(tmp_path: Path) -> Path:
+    """Fake `tts-cli --serve`: logs each start and request; the voice selects error behaviour."""
+    template = tmp_path / "template.wav"
+    _write_wav(template, sample_rate=24000)
+    log = tmp_path / "tts-cli.log"
     tts_cli = tmp_path / "tts-cli"
-    tts_cli.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    tts_cli.write_text(
+        f"""#!/bin/sh
+echo "start $*" >> "{log}"
+echo "@@ready"
+while IFS='\t' read -r voice save_path prompt; do
+    echo "request $voice $prompt" >> "{log}"
+    case "$voice" in
+        fail_voice) printf '@@error\\tsynthesis failed for %s\\n' "$voice"; continue ;;
+        crash_voice) echo "fatal crash" >&2; exit 3 ;;
+        hang_voice) exec sleep 60 ;;
+    esac
+    cp "{template}" "$save_path"
+    printf '@@done\\t%s\\n' "$save_path"
+done
+""",
+        encoding="utf-8",
+    )
     tts_cli.chmod(0o755)
+    return tts_cli
+
+
+def _fake_phonemize(tmp_path: Path) -> Path:
+    """Fake `phonemize --serve`: logs each start and answers every word with fixed phonemes."""
+    log = tmp_path / "phonemize.log"
     phonemize_cli = tmp_path / "phonemize"
-    phonemize_cli.write_text("#!/bin/sh\necho 'fallback-phonemes'\n", encoding="utf-8")
+    phonemize_cli.write_text(
+        f"""#!/bin/sh
+echo "start" >> "{log}"
+echo "@@ready"
+while IFS= read -r word; do
+    printf '@@done\\tfallback-phonemes\\n'
+done
+""",
+        encoding="utf-8",
+    )
     phonemize_cli.chmod(0o755)
+    return phonemize_cli
+
+
+def _runtime_config(tmp_path: Path, timeout_seconds: int = 30) -> KokoroRuntimeConfig:
     model_path = tmp_path / "Kokoro_no_espeak.gguf"
     model_path.write_bytes(b"fake")
     return KokoroRuntimeConfig(
-        tts_cli=tts_cli,
-        phonemize_cli=phonemize_cli,
+        tts_cli=_fake_tts_cli(tmp_path),
+        phonemize_cli=_fake_phonemize(tmp_path),
         model_path=model_path,
         n_threads=4,
-        timeout_seconds=30,
+        timeout_seconds=timeout_seconds,
     )
+
+
+def _log_lines(path: Path, prefix: str) -> list[str]:
+    return [line for line in path.read_text(encoding="utf-8").splitlines() if line.startswith(prefix)]
+
+
+@pytest.fixture
+def config(tmp_path: Path) -> Iterator[KokoroRuntimeConfig]:
+    runtime = _runtime_config(tmp_path)
+    yield runtime
+    unload_tts_model(runtime)
 
 
 def _write_wav(path: Path, sample_rate: int) -> None:
@@ -69,43 +121,45 @@ def test_validate_voice_rejects_unknown_voice() -> None:
         validate_voice("not_a_voice", kokoro_voices())
 
 
-def test_build_kokoro_command_uses_voice(tmp_path: Path) -> None:
-    config = _runtime_config(tmp_path)
-    output_path = tmp_path / "out.wav"
-
-    command = build_kokoro_command(config, "hello world", "af_heart", output_path)
-
-    assert command == (
+def test_build_tts_serve_command_loads_model_once_for_all_voices(config: KokoroRuntimeConfig) -> None:
+    assert build_tts_serve_command(config) == (
         str(config.tts_cli),
+        "--serve",
         "--model-path",
         str(config.model_path),
-        "--phonemes",
-        "--prompt",
-        "hello world",
-        "--save-path",
-        str(output_path),
         "--n-threads",
         "4",
-        "--voice",
-        "af_heart",
     )
 
 
-def test_text_to_phonemes_uses_misaki_lexicon(tmp_path: Path) -> None:
-    config = _runtime_config(tmp_path)
+def test_build_tts_request_is_one_tab_separated_line(tmp_path: Path) -> None:
+    output_path = tmp_path / "out.wav"
 
+    assert build_tts_request("həlˈO\nwˈɜɹld", "af_heart", output_path) == f"af_heart\t{output_path}\thəlˈO wˈɜɹld"
+
+
+def test_build_tts_request_rejects_tabs(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="tabs or newlines"):
+        build_tts_request("həlˈO", "af\theart", tmp_path / "out.wav")
+
+
+def test_text_to_phonemes_uses_misaki_lexicon(config: KokoroRuntimeConfig) -> None:
     assert text_to_phonemes(config, "The tools are ready.") == "ðə tˈulz ɑɹ ɹˈɛdi."
 
 
-def test_text_to_phonemes_falls_back_to_tts_cpp_for_unknown_words(tmp_path: Path) -> None:
-    config = _runtime_config(tmp_path)
-
+def test_text_to_phonemes_falls_back_to_one_persistent_phonemizer(config: KokoroRuntimeConfig, tmp_path: Path) -> None:
     assert text_to_phonemes(config, "kubectl") == "fallback-phonemes"
+    assert text_to_phonemes(config, "zorbleflax") == "fallback-phonemes"
+
+    assert _log_lines(tmp_path / "phonemize.log", "start") == ["start"]
 
 
-def test_validate_runtime_config_requires_files(tmp_path: Path) -> None:
-    config = _runtime_config(tmp_path)
+def test_text_to_phonemes_sends_tokens_spanning_a_line_break_as_one_line(config: KokoroRuntimeConfig) -> None:
+    # misaki hands "Overview\nThis" to the fallback as a single unknown token.
+    assert text_to_phonemes(config, "Overview\nThis document is fine.") == "fallback-phonemes dˈɑkjəmənt ɪz fˈIn."
 
+
+def test_validate_runtime_config_requires_files(config: KokoroRuntimeConfig, tmp_path: Path) -> None:
     validate_runtime_config(config)
 
     missing = KokoroRuntimeConfig(
@@ -119,37 +173,68 @@ def test_validate_runtime_config_requires_files(tmp_path: Path) -> None:
         validate_runtime_config(missing)
 
 
-def test_generate_wav_runs_tts_cli_and_requires_output(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    config = _runtime_config(tmp_path)
-    output_path = tmp_path / "generated.wav"
-    calls: list[tuple[str, ...]] = []
+def test_generate_wav_loads_model_once_for_every_voice(config: KokoroRuntimeConfig, tmp_path: Path) -> None:
+    first = generate_wav(config, "hello", "af_heart", tmp_path / "out" / "first.wav")
+    second = generate_wav(config, "hello", "bm_george", tmp_path / "out" / "second.wav")
 
-    def fake_run(command: tuple[str, ...], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        calls.append(command)
-        assert kwargs["timeout"] == 30
-        save_path = Path(command[command.index("--save-path") + 1])
-        _write_wav(save_path, sample_rate=24000)
-        return subprocess.CompletedProcess(command, 0, stdout="ok", stderr="")
-
-    monkeypatch.setattr("low_latency_tts_service_mcp.tts.subprocess.run", fake_run)
-
-    result = generate_wav(config, "hello", "af_heart", output_path)
-
-    assert result == output_path
-    assert output_path.is_file()
-    assert calls[0][-2:] == ("--voice", "af_heart")
+    assert first.is_file()
+    assert second.is_file()
+    log = tmp_path / "tts-cli.log"
+    assert _log_lines(log, "start") == [f"start --serve --model-path {config.model_path} --n-threads 4"]
+    assert _log_lines(log, "request") == ["request af_heart həlˈO", "request bm_george həlˈO"]
 
 
-def test_generate_wav_surfaces_cli_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    config = _runtime_config(tmp_path)
+def test_load_tts_model_preloads_the_model_used_by_generate_wav(config: KokoroRuntimeConfig, tmp_path: Path) -> None:
+    load_tts_model(config)
+    generate_wav(config, "hello", "af_heart", tmp_path / "out.wav")
 
-    def fake_run(command: tuple[str, ...], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
-        raise subprocess.CalledProcessError(2, command, output="bad stdout", stderr="bad stderr")
+    assert len(_log_lines(tmp_path / "tts-cli.log", "start")) == 1
 
-    monkeypatch.setattr("low_latency_tts_service_mcp.tts.subprocess.run", fake_run)
 
-    with pytest.raises(RuntimeError, match="bad stderr"):
-        generate_wav(config, "hello", "af_heart", tmp_path / "missing.wav")
+def test_generate_wav_surfaces_error_answer_and_keeps_model_loaded(config: KokoroRuntimeConfig, tmp_path: Path) -> None:
+    with pytest.raises(RuntimeError, match="synthesis failed for fail_voice"):
+        generate_wav(config, "hello", "fail_voice", tmp_path / "failed.wav")
+
+    generate_wav(config, "hello", "af_heart", tmp_path / "ok.wav")
+    assert len(_log_lines(tmp_path / "tts-cli.log", "start")) == 1
+
+
+def test_generate_wav_reports_crash_and_restarts_model(config: KokoroRuntimeConfig, tmp_path: Path) -> None:
+    with pytest.raises(RuntimeError, match=r"exited with status 3 \| stderr: fatal crash"):
+        generate_wav(config, "hello", "crash_voice", tmp_path / "crashed.wav")
+
+    generate_wav(config, "hello", "af_heart", tmp_path / "ok.wav")
+    assert len(_log_lines(tmp_path / "tts-cli.log", "start")) == 2
+
+
+def test_generate_wav_times_out_and_kills_model(tmp_path: Path) -> None:
+    config = _runtime_config(tmp_path, timeout_seconds=1)
+    try:
+        hung_process = load_tts_model(config)
+        with pytest.raises(TimeoutError, match="did not answer within 1s"):
+            generate_wav(config, "hello", "hang_voice", tmp_path / "hung.wav")
+        assert not hung_process.is_alive()
+
+        generate_wav(config, "hello", "af_heart", tmp_path / "ok.wav")
+        assert len(_log_lines(tmp_path / "tts-cli.log", "start")) == 2
+    finally:
+        unload_tts_model(config)
+
+
+def test_generate_wav_refuses_to_overwrite(config: KokoroRuntimeConfig, tmp_path: Path) -> None:
+    output_path = tmp_path / "exists.wav"
+    output_path.write_bytes(b"existing")
+
+    with pytest.raises(FileExistsError, match="Refusing to overwrite"):
+        generate_wav(config, "hello", "af_heart", output_path)
+
+
+def test_unload_tts_model_stops_the_process(config: KokoroRuntimeConfig) -> None:
+    process = load_tts_model(config)
+
+    unload_tts_model(config)
+
+    assert not process.is_alive()
 
 
 def test_read_wav_mono_float32_reads_pcm(tmp_path: Path) -> None:

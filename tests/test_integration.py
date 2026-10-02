@@ -162,23 +162,13 @@ def _write_fake_tts_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tupl
     tts_cli.write_text(
         f"""#!/usr/bin/env bash
 set -euo pipefail
-save_path=""
-voice=""
-prompt=""
+serve=0
 model_path=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --save-path)
-            save_path="$2"
-            shift 2
-            ;;
-        --voice)
-            voice="$2"
-            shift 2
-            ;;
-        --prompt)
-            prompt="$2"
-            shift 2
+        --serve)
+            serve=1
+            shift
             ;;
         --model-path)
             model_path="$2"
@@ -188,32 +178,37 @@ while [ "$#" -gt 0 ]; do
             shift 2
             ;;
         *)
-            shift
+            echo "unexpected argument: $1" >&2
+            exit 10
             ;;
     esac
 done
-if [ -z "$save_path" ]; then
-    echo "missing --save-path" >&2
+if [ "$serve" -ne 1 ]; then
+    echo "missing --serve" >&2
     exit 11
 fi
 if [ -z "${{KOKORO_FAKE_TTS_LOG:-}}" ]; then
     echo "missing KOKORO_FAKE_TTS_LOG" >&2
     exit 12
 fi
-{{
-    printf 'voice=%s\\n' "$voice"
-    printf 'prompt=%s\\n' "$prompt"
-    printf 'model=%s\\n' "$model_path"
-    printf 'save=%s\\n' "$save_path"
-    printf -- '---\\n'
-}} >> "$KOKORO_FAKE_TTS_LOG"
-mkdir -p "$(dirname "$save_path")"
-node - "$save_path" <<'NODE'
+printf 'model-load=%s\\n' "$model_path" >> "$KOKORO_FAKE_TTS_LOG"
+echo "@@ready"
+while IFS=$'\\t' read -r voice save_path prompt; do
+    {{
+        printf 'voice=%s\\n' "$voice"
+        printf 'prompt=%s\\n' "$prompt"
+        printf 'save=%s\\n' "$save_path"
+        printf -- '---\\n'
+    }} >> "$KOKORO_FAKE_TTS_LOG"
+    mkdir -p "$(dirname "$save_path")"
+    node - "$save_path" <<'NODE'
 const fs = require("fs");
 const output = process.argv[2];
 const payload = Buffer.from("{payload}", "base64");
 fs.writeFileSync(output, payload);
 NODE
+    printf '@@done\\t%s\\n' "$save_path"
+done
 """,
         encoding="utf-8",
     )
@@ -343,8 +338,11 @@ def test_fastapi_lifespan_generates_wav_and_plays_audio(tmp_path: Path, monkeypa
     audio_file = completed["audio_file"]
     assert audio_file is not None
     assert Path(audio_file).is_file()
-    assert "voice=bm_george" in call_log.read_text(encoding="utf-8")
-    assert "prompt=həlˈO sˈɜɹvəs ˌɪntəɡɹˈAʃən." in call_log.read_text(encoding="utf-8")
+    log_text = call_log.read_text(encoding="utf-8")
+    assert "voice=bm_george" in log_text
+    assert "prompt=həlˈO sˈɜɹvəs ˌɪntəɡɹˈAʃən." in log_text
+    # The model is loaded once at startup and reused for generation.
+    assert log_text.count("model-load=") == 1
     assert _RecordingOutputStream.started_count == 1
     assert _RecordingOutputStream.closed_count == 1
     assert len(_RecordingOutputStream.writes) == 2
@@ -406,3 +404,4 @@ def test_mcp_stdio_tools_drive_the_real_service(tmp_path: Path, monkeypatch: pyt
     log_text = call_log.read_text(encoding="utf-8")
     assert "voice=bm_george" in log_text
     assert "prompt=həlˈO ˌɛmsˌipˈi ˌɪntəɡɹˈAʃən." in log_text
+    assert log_text.count("model-load=") == 1

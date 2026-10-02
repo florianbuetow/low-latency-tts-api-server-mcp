@@ -25,8 +25,10 @@ from low_latency_tts_service_mcp.tts import (
     generate_wav,
     kokoro_voices,
     load_config,
+    load_tts_model,
     make_output_path,
     simplify_punctuation,
+    unload_tts_model,
     validate_runtime_config,
 )
 
@@ -440,6 +442,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     """Start the server worker and shut it down cleanly with the app."""
     state = _build_server_state(_parse_server_config())
     app.state.server = state
+    load_tts_model(state.runtime)
     worker = threading.Thread(target=server_audio_worker, args=(state,), daemon=True)
     worker.start()
 
@@ -449,6 +452,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     worker.join(timeout=10)
     if worker.is_alive():
         raise RuntimeError("Kokoro audio worker did not shut down within 10 seconds")
+    unload_tts_model(state.runtime)
 
 
 app = FastAPI(lifespan=lifespan)

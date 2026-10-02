@@ -1,7 +1,8 @@
-"""Kokoro TTS.cpp command execution, WAV playback, and text preparation."""
+"""Kokoro TTS.cpp model processes, WAV playback, and text preparation."""
 
 from __future__ import annotations
 
+import collections
 import dataclasses
 import datetime
 import functools
@@ -183,29 +184,184 @@ def make_output_path(output_dir: Path) -> Path:
     return output_dir / f"speech_{timestamp}.wav"
 
 
+class ServeProcess:
+    """A TTS.cpp binary started with --serve, keeping its model loaded between requests.
+
+    Each request is one stdin line. The process answers it with one stdout line,
+    "@@done<TAB><payload>" or "@@error<TAB><message>", and prints "@@ready" once loaded.
+    Other stdout lines are log output and are ignored.
+    """
+
+    def __init__(self, command: tuple[str, ...], timeout_seconds: int) -> None:
+        """Start the process and wait until its model is loaded."""
+        self.command = command
+        self._timeout_seconds = timeout_seconds
+        self._lock = threading.Lock()
+        self._responses: queue.Queue[str | None] = queue.Queue()
+        self._stderr_tail: collections.deque[str] = collections.deque(maxlen=20)
+        self._process = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+        )
+        self._stdout_reader = threading.Thread(target=self._read_stdout, daemon=True)
+        self._stderr_reader = threading.Thread(target=self._read_stderr, daemon=True)
+        self._stdout_reader.start()
+        self._stderr_reader.start()
+        ready = self._next_response()
+        if ready != "@@ready":
+            self.close()
+            raise RuntimeError(f"{command[0]} did not report ready, got: {ready!r}")
+
+    def _read_stdout(self) -> None:
+        stdout = self._process.stdout
+        if stdout is None:
+            raise RuntimeError(f"{self.command[0]} has no stdout pipe")
+        for line in stdout:
+            if line.startswith("@@"):
+                self._responses.put(line.rstrip("\n"))
+        self._responses.put(None)
+
+    def _read_stderr(self) -> None:
+        stderr = self._process.stderr
+        if stderr is None:
+            raise RuntimeError(f"{self.command[0]} has no stderr pipe")
+        for line in stderr:
+            self._stderr_tail.append(line.rstrip("\n"))
+
+    def is_alive(self) -> bool:
+        """Return whether the process is still running."""
+        return self._process.poll() is None
+
+    def _next_response(self) -> str:
+        try:
+            response = self._responses.get(timeout=self._timeout_seconds)
+        except queue.Empty as error:
+            self._process.kill()
+            self._process.wait()
+            raise TimeoutError(f"{self.command[0]} did not answer within {self._timeout_seconds}s") from error
+        if response is None:
+            returncode = self._process.wait()
+            self._stderr_reader.join(timeout=1)
+            message = f"{self.command[0]} exited with status {returncode}"
+            if self._stderr_tail:
+                message += f" | stderr: {' | '.join(self._stderr_tail)}"
+            raise RuntimeError(message)
+        return response
+
+    def request(self, line: str) -> str:
+        """Send one request line and return the payload of the "@@done" answer.
+
+        Raises:
+            ValueError: If the request contains a newline.
+            RuntimeError: If the process is not running, exits, or answers "@@error".
+            TimeoutError: If no answer arrives within the timeout; the process is killed.
+        """
+        if "\n" in line:
+            raise ValueError(f"Request must be a single line: {line!r}")
+        with self._lock:
+            stdin = self._process.stdin
+            if stdin is None or not self.is_alive():
+                raise RuntimeError(f"{self.command[0]} is not running")
+            try:
+                stdin.write(line + "\n")
+                stdin.flush()
+            except BrokenPipeError as error:
+                raise RuntimeError(f"{self.command[0]} exited with status {self._process.wait()} before accepting the request") from error
+            response = self._next_response()
+        kind, _, payload = response.partition("\t")
+        if kind == "@@done":
+            return payload
+        if kind == "@@error":
+            raise RuntimeError(f"{self.command[0]} failed: {payload}")
+        raise RuntimeError(f"Unexpected answer from {self.command[0]}: {response!r}")
+
+    def close(self) -> None:
+        """Close stdin so the process exits, killing it if it does not exit in time."""
+        stdin = self._process.stdin
+        if stdin is not None and not stdin.closed and self.is_alive():
+            stdin.close()
+        try:
+            self._process.wait(timeout=self._timeout_seconds)
+        except subprocess.TimeoutExpired:
+            self._process.kill()
+            self._process.wait()
+
+
+class ServeProcessSlot:
+    """Holds the one ServeProcess for a command, starting it on first use and after it exits."""
+
+    def __init__(self, command: tuple[str, ...], timeout_seconds: int) -> None:
+        """Create an empty slot; the process starts on the first ``get``."""
+        self.command = command
+        self._timeout_seconds = timeout_seconds
+        self._process: ServeProcess | None = None
+        self._lock = threading.Lock()
+
+    def get(self) -> ServeProcess:
+        """Return the running process, starting it if it is not running."""
+        with self._lock:
+            if self._process is None or not self._process.is_alive():
+                self._process = ServeProcess(self.command, self._timeout_seconds)
+            return self._process
+
+    def close(self) -> None:
+        """Close the process if one is running."""
+        with self._lock:
+            if self._process is not None:
+                self._process.close()
+                self._process = None
+
+
+@functools.cache
+def tts_model_slot(command: tuple[str, ...], timeout_seconds: int) -> ServeProcessSlot:
+    """Return the process-wide slot holding the loaded Kokoro model for a tts-cli command."""
+    return ServeProcessSlot(command, timeout_seconds)
+
+
+def build_tts_serve_command(config: KokoroRuntimeConfig) -> tuple[str, ...]:
+    """Build the tts-cli command that loads the Kokoro model once and serves requests."""
+    return (
+        str(config.tts_cli),
+        "--serve",
+        "--model-path",
+        str(config.model_path),
+        "--n-threads",
+        str(config.n_threads),
+    )
+
+
+def load_tts_model(config: KokoroRuntimeConfig) -> ServeProcess:
+    """Return the loaded Kokoro model process for this configuration, starting it if needed.
+
+    The Kokoro GGUF carries every voice pack, so this one process serves all voices.
+    """
+    return tts_model_slot(build_tts_serve_command(config), config.timeout_seconds).get()
+
+
+def unload_tts_model(config: KokoroRuntimeConfig) -> None:
+    """Stop the loaded Kokoro model process for this configuration, if it is running."""
+    tts_model_slot(build_tts_serve_command(config), config.timeout_seconds).close()
+
+
 @functools.cache
 def _g2p(phonemize_cli: Path, model_path: Path, timeout_seconds: int) -> en.G2P:
     """Build the misaki grapheme-to-phoneme converter once per configuration.
 
     misaki is the G2P library Kokoro was trained with. Words missing from its
-    lexicons fall back to the TTS.cpp phonemizer built into the Kokoro GGUF.
+    lexicons fall back to the TTS.cpp phonemizer built into the Kokoro GGUF,
+    which runs as one persistent process so the GGUF is loaded only once.
     """
+    phonemizer = ServeProcessSlot((str(phonemize_cli), "--serve", "--phonemizer-path", str(model_path)), timeout_seconds)
 
     @functools.cache
     def phonemize_word(word: str) -> str:
-        try:
-            completed = subprocess.run(
-                (str(phonemize_cli), "--phonemizer-path", str(model_path), "--prompt", word),
-                capture_output=True,
-                text=True,
-                check=True,
-                timeout=timeout_seconds,
-            )
-        except subprocess.CalledProcessError as error:
-            raise RuntimeError(_format_cli_failure(error)) from error
-        except subprocess.TimeoutExpired as error:
-            raise TimeoutError(f"TTS.cpp phonemize timed out after {timeout_seconds}s: {error.cmd}") from error
-        return completed.stdout.strip()
+        # misaki can hand over a token spanning a line break ("Overview\nThis"); the
+        # phonemizer treats newlines as spaces, and the request must be one line.
+        return phonemizer.get().request(word.replace("\n", " ")).strip()
 
     def fallback(token: MToken) -> tuple[str, int]:
         return phonemize_word(token.text), 1
@@ -221,58 +377,31 @@ def text_to_phonemes(config: KokoroRuntimeConfig, text: str) -> str:
     return phonemes
 
 
-def build_kokoro_command(config: KokoroRuntimeConfig, phonemes: str, voice: str, output_path: Path) -> tuple[str, ...]:
-    """Build the exact TTS.cpp command for one Kokoro generation from a phoneme string."""
-    return (
-        str(config.tts_cli),
-        "--model-path",
-        str(config.model_path),
-        "--phonemes",
-        "--prompt",
-        phonemes,
-        "--save-path",
-        str(output_path),
-        "--n-threads",
-        str(config.n_threads),
-        "--voice",
-        voice,
-    )
+def build_tts_request(phonemes: str, voice: str, output_path: Path) -> str:
+    """Build the tts-cli serve request line for one Kokoro generation.
 
-
-def _format_cli_failure(error: subprocess.CalledProcessError) -> str:
-    """Format a failed TTS.cpp subprocess result without hiding stdout or stderr."""
-    stdout = error.stdout if isinstance(error.stdout, str) else ""
-    stderr = error.stderr if isinstance(error.stderr, str) else ""
-    parts = [f"TTS.cpp exited with status {error.returncode}"]
-    if stdout.strip():
-        parts.append(f"stdout: {stdout.strip()}")
-    if stderr.strip():
-        parts.append(f"stderr: {stderr.strip()}")
-    return " | ".join(parts)
+    Raises:
+        ValueError: If a field contains a tab or newline, which the line protocol cannot carry.
+    """
+    fields = (voice, str(output_path), phonemes.replace("\n", " "))
+    for field in fields:
+        if "\t" in field or "\n" in field:
+            raise ValueError(f"TTS request field must not contain tabs or newlines: {field!r}")
+    return "\t".join(fields)
 
 
 def generate_wav(config: KokoroRuntimeConfig, text: str, voice: str, output_path: Path) -> Path:
-    """Generate a WAV file by shelling out to the patched TTS.cpp CLI."""
+    """Generate a WAV file with the persistent, model-loaded TTS.cpp process."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if output_path.exists():
         raise FileExistsError(f"Refusing to overwrite existing output: {output_path}")
 
-    command = build_kokoro_command(config, text_to_phonemes(config, text), voice, output_path)
-    try:
-        subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=config.timeout_seconds,
-        )
-    except subprocess.CalledProcessError as error:
-        raise RuntimeError(_format_cli_failure(error)) from error
-    except subprocess.TimeoutExpired as error:
-        raise TimeoutError(f"TTS.cpp timed out after {config.timeout_seconds}s: {error.cmd}") from error
-
+    request = build_tts_request(text_to_phonemes(config, text), voice, output_path)
+    saved_path = load_tts_model(config).request(request)
+    if Path(saved_path) != output_path:
+        raise RuntimeError(f"TTS.cpp saved {saved_path} instead of {output_path}")
     if not output_path.is_file():
-        raise RuntimeError(f"TTS.cpp exited successfully but produced no WAV at {output_path}")
+        raise RuntimeError(f"TTS.cpp reported success but produced no WAV at {output_path}")
 
     return output_path
 

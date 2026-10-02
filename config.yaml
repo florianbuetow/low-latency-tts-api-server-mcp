@@ -6,7 +6,7 @@ sample_rate: 24000
 mp3_sample_rate: 44100
 lead_silence_ms: 200
 default_voice: af_heart
-save_wav: true
+save_wav: false
 simplify_punctuation: false
 n_threads: 8
 timeout_seconds: 120
