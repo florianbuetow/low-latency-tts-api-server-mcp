@@ -13,7 +13,6 @@ dependencies = [
     "pydantic>=2.0.0",
     "pyyaml>=6.0",
     "sounddevice>=0.4.6",
-    "soundfile>=0.13.0",
     "spacy>=3.8.0",
     "uvicorn>=0.34.0",
 ]

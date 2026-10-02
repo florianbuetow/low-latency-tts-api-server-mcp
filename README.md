@@ -179,6 +179,7 @@ phonemize_cli: ./vendor/TTS.cpp/build/bin/phonemize
 model: ./data/models/Kokoro_no_espeak.gguf
 output_dir: ./data/output
 sample_rate: 24000
+mp3_sample_rate: 44100
 lead_silence_ms: 200
 default_voice: af_heart
 save_wav: true
@@ -196,6 +197,7 @@ port: 12000
 | `model` | Path to `Kokoro_no_espeak.gguf` |
 | `output_dir` | Directory for generated WAV files |
 | `sample_rate` | Expected WAV sample rate in Hz |
+| `mp3_sample_rate` | Sample rate in Hz of MP3 files written by `just convert` |
 | `lead_silence_ms` | Silence written before playback starts on a new audio stream |
 | `default_voice` | Voice used when `/say` omits a voice |
 | `save_wav` | Save generated audio to WAV files in `output_dir` (`true` or `false`) |
@@ -246,7 +248,7 @@ If `--voice` is not supplied, the REPL prompts you to pick a voice; otherwise it
 just convert af_heart data/input/story.txt data/output/story.mp3
 ```
 
-Synthesizes a text file with the same pipeline as `just chat` and writes the result as an MP3 instead of playing it. Each blank-line-separated paragraph is handled like one chat submission; the paragraphs are concatenated into a single mono MP3 at `sample_rate`. The output path must end in `.mp3`; its parent directories are created. If the output file already exists, the conversion is skipped — delete the file to regenerate it.
+Synthesizes a text file with the same pipeline as `just chat` and writes the result as a WAV and an MP3 instead of playing it. Each blank-line-separated paragraph is handled like one chat submission; the paragraphs are concatenated into a WAV file saved next to the MP3 under the same name (e.g. `story.wav`), which ffmpeg encodes as a mono MP3 at `mp3_sample_rate` with highest-quality variable bitrate (LAME `-q:a 0`). Requires `ffmpeg` on `PATH`. The output path must end in `.mp3`; its parent directories are created. If the output file already exists, the conversion is skipped — delete the file to regenerate it.
 
 Input controls:
 

@@ -4,8 +4,8 @@ Reads text from the terminal line by line, synthesizes each submission with the
 patched TTS.cpp Kokoro CLI, and plays it back. Generation of the next line
 overlaps playback of the current one, so there is no gap between utterances.
 
-With --input-file and --output, the same synthesis converts a text file into an
-MP3 file instead of playing it.
+With --input-file and --output, the same synthesis converts a text file into a
+WAV file, which ffmpeg encodes as an MP3 file instead of playing it.
 """
 
 from __future__ import annotations
@@ -15,15 +15,17 @@ import dataclasses
 import datetime
 import queue
 import re
+import shutil
+import subprocess
 import sys
 import tempfile
 import termios
 import threading
 import tty
+import wave
 from pathlib import Path
 
 import numpy as np
-import soundfile as sf
 
 from low_latency_tts_service_mcp.tts import (
     OUTPUT_DIR,
@@ -50,6 +52,7 @@ class ChatConfig:
     runtime: KokoroRuntimeConfig
     output_dir: Path
     sample_rate: int
+    mp3_sample_rate: int
     lead_silence_ms: int
     save_wav: bool
     simplify_punctuation_enabled: bool
@@ -110,6 +113,7 @@ def load_chat_config() -> ChatConfig:
         runtime=runtime,
         output_dir=Path(_require_str(config, "output_dir")),
         sample_rate=_require_int(config, "sample_rate"),
+        mp3_sample_rate=_require_int(config, "mp3_sample_rate"),
         lead_silence_ms=_require_int(config, "lead_silence_ms"),
         save_wav=_require_bool(config, "save_wav"),
         simplify_punctuation_enabled=_require_bool(config, "simplify_punctuation"),
@@ -468,8 +472,64 @@ def synthesize_paragraphs(config: ChatConfig, paragraphs: list[str], voice: str,
     return np.concatenate(chunks)
 
 
+def write_wav_int16(wav_path: Path, audio: FloatAudio, sample_rate: int) -> None:
+    """Write mono float32 samples as a 16-bit PCM WAV file.
+
+    Args:
+        wav_path: WAV file to write.
+        audio: Mono float32 samples in [-1, 1].
+        sample_rate: Sample rate in Hz.
+    """
+    pcm = (np.clip(audio, -1.0, 1.0) * 32767.0).astype("<i2")
+    with wave.open(str(wav_path), "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(pcm.tobytes())
+
+
+def encode_mp3(wav_path: Path, output_path: Path, mp3_sample_rate: int) -> None:
+    """Encode a WAV file as a mono MP3 with highest-quality LAME VBR.
+
+    Args:
+        wav_path: WAV file to encode.
+        output_path: MP3 file to write; must not exist yet.
+        mp3_sample_rate: Sample rate of the MP3 in Hz.
+
+    Raises:
+        FileNotFoundError: If ffmpeg is not on PATH.
+        RuntimeError: If ffmpeg fails.
+    """
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        raise FileNotFoundError("ffmpeg not found on PATH (install with: brew install ffmpeg)")
+    command = (
+        ffmpeg,
+        "-v",
+        "error",
+        "-n",
+        "-i",
+        str(wav_path),
+        "-ar",
+        str(mp3_sample_rate),
+        "-ac",
+        "1",
+        "-c:a",
+        "libmp3lame",
+        "-q:a",
+        "0",
+        str(output_path),
+    )
+    try:
+        subprocess.run(command, capture_output=True, text=True, check=True)
+    except subprocess.CalledProcessError as error:
+        raise RuntimeError(f"ffmpeg exited with status {error.returncode}: {error.stderr.strip()}") from error
+
+
 def convert_file(voice: str, input_path: Path, output_path: Path) -> None:
-    """Convert a text file into an MP3 file using the chat synthesis pipeline.
+    """Convert a text file into a WAV file and an MP3 file using the chat synthesis pipeline.
+
+    The uncompressed WAV is kept next to the MP3 under the same name.
 
     Args:
         voice: Voice to use for synthesis.
@@ -477,6 +537,7 @@ def convert_file(voice: str, input_path: Path, output_path: Path) -> None:
         output_path: MP3 file to write.
 
     Raises:
+        FileExistsError: If the WAV next to the output already exists.
         FileNotFoundError: If the input file does not exist.
         ValueError: If the output is not an .mp3 path, the voice is unknown, or
             the input has no text.
@@ -498,12 +559,17 @@ def convert_file(voice: str, input_path: Path, output_path: Path) -> None:
     print(f"Voice: {voice}")
     print(f"Input: {input_path} ({len(paragraphs)} paragraphs)\n")
 
+    wav_path = output_path.with_suffix(".wav")
+    if wav_path.exists():
+        raise FileExistsError(f"Refusing to overwrite existing WAV: {wav_path}")
+
     with tempfile.TemporaryDirectory() as work_dir:
         audio = synthesize_paragraphs(config, paragraphs, voice, Path(work_dir))
-
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    sf.write(output_path, audio, config.sample_rate, format="MP3")
-    print(f"\nWrote {output_path} ({len(audio) / config.sample_rate:.1f}s)")
+    write_wav_int16(wav_path, audio, config.sample_rate)
+    print(f"\nWrote {wav_path} ({len(audio) / config.sample_rate:.1f}s)")
+    encode_mp3(wav_path, output_path, config.mp3_sample_rate)
+    print(f"Wrote {output_path}")
 
 
 def run_convert(voice: str | None, input_path: Path | None, output_path: Path | None) -> None:

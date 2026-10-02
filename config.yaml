@@ -3,6 +3,7 @@ phonemize_cli: ./vendor/TTS.cpp/build/bin/phonemize
 model: ./data/models/Kokoro_no_espeak.gguf
 output_dir: ./data/output
 sample_rate: 24000
+mp3_sample_rate: 44100
 lead_silence_ms: 200
 default_voice: af_heart
 save_wav: true

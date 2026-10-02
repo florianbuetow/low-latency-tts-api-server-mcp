@@ -159,6 +159,13 @@ check:
         exit 1; \
     fi
     @printf "\033[0;32m✓ cmake is installed\033[0m\n"
+    @if ! command -v ffmpeg >/dev/null 2>&1; then \
+        printf "\033[0;31m✗ Error: ffmpeg is not installed\033[0m\n"; \
+        printf "  Install with: brew install ffmpeg\n"; \
+        echo ""; \
+        exit 1; \
+    fi
+    @printf "\033[0;32m✓ ffmpeg is installed\033[0m\n"
     @echo ""
 
 # Run the interactive chat

@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+import subprocess
 import wave
 from pathlib import Path
 
 import numpy as np
 import pytest
-import soundfile as sf
 
 from low_latency_tts_service_mcp.tts import KokoroRuntimeConfig
 from src.main import ChatConfig, convert_file, main, split_paragraphs
@@ -26,6 +26,7 @@ def _chat_config(tmp_path: Path) -> ChatConfig:
         ),
         output_dir=tmp_path / "output",
         sample_rate=SAMPLE_RATE,
+        mp3_sample_rate=44100,
         lead_silence_ms=200,
         save_wav=False,
         simplify_punctuation_enabled=False,
@@ -39,6 +40,21 @@ def _write_wav(path: Path, frames: int, sample_rate: int) -> None:
         wav_file.setsampwidth(2)
         wav_file.setframerate(sample_rate)
         wav_file.writeframes(samples.tobytes())
+
+
+def _probe(path: Path) -> dict[str, str]:
+    entries = "format=duration:stream=codec_name,sample_rate,channels"
+    completed = subprocess.run(
+        ("ffprobe", "-v", "error", "-show_entries", entries, "-of", "default=nw=1", str(path)),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return dict(line.split("=", 1) for line in completed.stdout.splitlines())
+
+
+def _no_executable(_name: str) -> None:
+    return None
 
 
 def _accept_runtime(_config: KokoroRuntimeConfig) -> None:
@@ -82,10 +98,35 @@ class TestConvert:
         convert_file("af_heart", input_path, output_path)
 
         assert calls == ["One.", "Two."]
-        info = sf.info(str(output_path))
-        assert info.format == "MP3"
-        assert info.samplerate == SAMPLE_RATE
-        assert abs(info.duration - 3.0) < 0.1
+        info = _probe(output_path)
+        assert info["codec_name"] == "mp3"
+        assert info["sample_rate"] == "44100"
+        assert info["channels"] == "1"
+        assert abs(float(info["duration"]) - 3.0) < 0.1
+        wav_info = _probe(output_path.with_suffix(".wav"))
+        assert wav_info["codec_name"] == "pcm_s16le"
+        assert wav_info["sample_rate"] == str(SAMPLE_RATE)
+        assert abs(float(wav_info["duration"]) - 3.0) < 0.01
+
+    def test_refuses_to_overwrite_existing_wav(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        input_path = tmp_path / "in.txt"
+        input_path.write_text("One.", encoding="utf-8")
+        output_path = tmp_path / "out.mp3"
+        output_path.with_suffix(".wav").write_bytes(b"existing")
+        _patch_runtime(monkeypatch, tmp_path, {"One.": SAMPLE_RATE}, SAMPLE_RATE)
+
+        with pytest.raises(FileExistsError, match="existing WAV"):
+            convert_file("af_heart", input_path, output_path)
+        assert output_path.with_suffix(".wav").read_bytes() == b"existing"
+
+    def test_raises_when_ffmpeg_missing(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        input_path = tmp_path / "in.txt"
+        input_path.write_text("One.", encoding="utf-8")
+        _patch_runtime(monkeypatch, tmp_path, {"One.": SAMPLE_RATE}, SAMPLE_RATE)
+        monkeypatch.setattr("src.main.shutil.which", _no_executable)
+
+        with pytest.raises(FileNotFoundError, match="ffmpeg"):
+            convert_file("af_heart", input_path, tmp_path / "out.mp3")
 
     def test_rejects_non_mp3_output(self, tmp_path: Path) -> None:
         with pytest.raises(ValueError, match=r"\.mp3"):
