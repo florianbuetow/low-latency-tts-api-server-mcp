@@ -490,7 +490,7 @@ def write_wav_int16(wav_path: Path, audio: FloatAudio, sample_rate: int) -> None
 
 
 def encode_mp3(wav_path: Path, output_path: Path, mp3_sample_rate: int) -> None:
-    """Encode a WAV file as a mono MP3 with highest-quality LAME VBR.
+    """Encode a WAV file as a mono MP3 with LAME variable bitrate quality 7.
 
     Args:
         wav_path: WAV file to encode.
@@ -518,7 +518,7 @@ def encode_mp3(wav_path: Path, output_path: Path, mp3_sample_rate: int) -> None:
         "-c:a",
         "libmp3lame",
         "-q:a",
-        "0",
+        "7",
         str(output_path),
     )
     try:
@@ -528,9 +528,10 @@ def encode_mp3(wav_path: Path, output_path: Path, mp3_sample_rate: int) -> None:
 
 
 def convert_file(voice: str, input_path: Path, output_path: Path) -> None:
-    """Convert a text file into a WAV file and an MP3 file using the chat synthesis pipeline.
+    """Convert a text file into an MP3 file using the chat synthesis pipeline.
 
-    The uncompressed WAV is kept next to the MP3 under the same name.
+    The paragraphs are synthesized into a temporary WAV, which is encoded as MP3
+    and then deleted.
 
     Args:
         voice: Voice to use for synthesis.
@@ -538,7 +539,6 @@ def convert_file(voice: str, input_path: Path, output_path: Path) -> None:
         output_path: MP3 file to write.
 
     Raises:
-        FileExistsError: If the WAV next to the output already exists.
         FileNotFoundError: If the input file does not exist.
         ValueError: If the output is not an .mp3 path, the voice is unknown, or
             the input has no text.
@@ -560,17 +560,13 @@ def convert_file(voice: str, input_path: Path, output_path: Path) -> None:
     print(f"Voice: {voice}")
     print(f"Input: {input_path} ({len(paragraphs)} paragraphs)\n")
 
-    wav_path = output_path.with_suffix(".wav")
-    if wav_path.exists():
-        raise FileExistsError(f"Refusing to overwrite existing WAV: {wav_path}")
-
     with tempfile.TemporaryDirectory() as work_dir:
         audio = synthesize_paragraphs(config, paragraphs, voice, Path(work_dir))
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    write_wav_int16(wav_path, audio, config.sample_rate)
-    print(f"\nWrote {wav_path} ({len(audio) / config.sample_rate:.1f}s)")
-    encode_mp3(wav_path, output_path, config.mp3_sample_rate)
-    print(f"Wrote {output_path}")
+        wav_path = Path(work_dir) / "combined.wav"
+        write_wav_int16(wav_path, audio, config.sample_rate)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        encode_mp3(wav_path, output_path, config.mp3_sample_rate)
+    print(f"\nWrote {output_path} ({len(audio) / config.sample_rate:.1f}s)")
 
 
 def run_convert(voice: str | None, input_path: Path | None, output_path: Path | None) -> None:

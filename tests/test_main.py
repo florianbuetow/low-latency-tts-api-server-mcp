@@ -23,7 +23,7 @@ def _base_config() -> dict[str, object]:
         "model": "./data/models/Kokoro_no_espeak.gguf",
         "output_dir": "./data/output",
         "sample_rate": 24000,
-        "mp3_sample_rate": 44100,
+        "mp3_sample_rate": 24000,
         "lead_silence_ms": 200,
         "save_wav": True,
         "simplify_punctuation": False,
